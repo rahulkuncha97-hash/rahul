@@ -42,9 +42,9 @@ import { GoogleMap, useJsApiLoader, Marker } from "@react-google-maps/api";
 import { formatDistanceToNow } from "date-fns";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { db } from "./lib/local-db";
-import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google';
-import { jwtDecode } from "jwt-decode";
+import { fbDb as db } from "./firebase-utils";
+import { auth } from "./firebase";
+import { signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
 import { User, Post, Message, Comment } from "./types";
 import { summarizeFeed, suggestPost, generateAIResponse } from "./services/aiService";
 
@@ -144,9 +144,7 @@ const CommentSection = ({ post, user }: { post: Post, user: User }) => {
 export default function ColonyConnect() {
   return (
     <ErrorBoundary>
-      <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID || "1234567890-mock.apps.googleusercontent.com"}>
-        <ColonyConnectApp />
-      </GoogleOAuthProvider>
+      <ColonyConnectApp />
     </ErrorBoundary>
   );
 }
@@ -160,43 +158,48 @@ function ColonyConnectApp() {
   const [wallpaper, setWallpaper] = useState<string | null>(null);
 
   useEffect(() => {
-    // Check local storage for existing session
-    const checkAuth = async () => {
-      const savedUser = localStorage.getItem("colony_user");
-      if (savedUser) {
-        const parsedUser = JSON.parse(savedUser);
-        const userDoc = await db.getUser(parsedUser.id);
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        const userDoc = await db.getUser(firebaseUser.uid);
         if (userDoc) {
           setUser(userDoc);
         } else {
-          await db.saveUser(parsedUser);
-          setUser(parsedUser);
+          const newUser: User = {
+            id: firebaseUser.uid,
+            name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+            email: firebaseUser.email || '',
+            avatar: firebaseUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`
+          };
+          await db.saveUser(newUser);
+          setUser(newUser);
         }
+      } else {
+        setUser(null);
       }
       setLoading(false);
-    };
-    checkAuth();
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
 
     // Wallpaper from local storage
     const savedWallpaper = localStorage.getItem("colony_wallpaper");
     if (savedWallpaper) setWallpaper(savedWallpaper);
 
-    // Initial data load
-    const loadData = async () => {
-      const loadedPosts = await db.getPosts();
-      setPosts(loadedPosts);
-      const loadedMessages = await db.getMessages();
-      setMessages(loadedMessages);
+    const unsubPosts = db.subscribePosts(setPosts);
+    const unsubMessages = db.subscribeMessages(setMessages);
+
+    return () => {
+      unsubPosts();
+      unsubMessages();
     };
-    loadData();
+  }, [user]);
 
-    // Simple polling for "real-time" feel since we removed Firebase
-    const interval = setInterval(loadData, 5000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const handleLogout = () => {
-    localStorage.removeItem("colony_user");
+  const handleLogout = async () => {
+    await signOut(auth);
     setUser(null);
   };
 
@@ -356,7 +359,7 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
   };
 
   const uploadFile = async (file: File | Blob, path: string) => {
-    return await db.fileToBase64(file);
+    return await db.uploadFile(file as File, path);
   };
 
   const handleAISuggest = async () => {
@@ -661,7 +664,7 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
   }, [messages]);
 
   const uploadFile = async (file: File | Blob, path: string) => {
-    return await db.fileToBase64(file);
+    return await db.uploadFile(file as File, path);
   };
 
   const handleFileUpload = (file: File) => {
@@ -1003,8 +1006,7 @@ const MapTab = ({ user }: { user: User }) => {
   }, [isLiveEnabled, user]);
 
   useEffect(() => {
-    const loadLocations = async () => {
-      const allLocations = await db.getLocations();
+    const unsubLocations = db.subscribeLocations((allLocations) => {
       const users: { [key: string]: any } = {};
       Object.entries(allLocations).forEach(([userId, data]: [string, any]) => {
         if (userId !== user.id && Date.now() - data.timestamp < 300000) { // Only show active users (last 5 mins)
@@ -1012,11 +1014,9 @@ const MapTab = ({ user }: { user: User }) => {
         }
       });
       setOtherUsers(users);
-    };
+    });
 
-    loadLocations();
-    const interval = setInterval(loadLocations, 10000); // Poll every 10s
-    return () => clearInterval(interval);
+    return () => unsubLocations();
   }, [user.id]);
 
   const locations = [
@@ -1321,7 +1321,7 @@ const ProfileTab = ({ user, setUser, posts, onLogout, setWallpaper }: { user: Us
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const url = await db.fileToBase64(file);
+      const url = await db.uploadFile(file, `wallpapers/${user.id}_${Date.now()}`);
       setWallpaper(url);
       localStorage.setItem("colony_wallpaper", url);
     } catch (error) {
@@ -1346,7 +1346,7 @@ const ProfileTab = ({ user, setUser, posts, onLogout, setWallpaper }: { user: Us
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const url = await db.fileToBase64(file);
+      const url = await db.uploadFile(file, `avatars/${user.id}_${Date.now()}`);
       const updated = { ...user, avatar: url };
       await db.saveUser(updated);
       setUser(updated);
@@ -1474,36 +1474,30 @@ const Auth = ({ onAuth }: { onAuth: any }) => {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const handleGoogleSuccess = async (credentialResponse: any) => {
+  const handleGoogleLogin = async () => {
     setLoading(true);
     setError("");
     try {
-      const decoded: any = jwtDecode(credentialResponse.credential);
-      const user: User = {
-        id: decoded.sub,
-        name: decoded.name,
-        email: decoded.email,
-        avatar: decoded.picture
-      };
+      const provider = new GoogleAuthProvider();
+      const result = await signInWithPopup(auth, provider);
+      const firebaseUser = result.user;
       
-      // Save to local db
-      await db.saveUser(user);
-      
-      // Save to local storage for session
-      localStorage.setItem("colony_user", JSON.stringify(user));
-      
-      // Trigger app re-render
-      window.location.reload();
+      const userDoc = await db.getUser(firebaseUser.uid);
+      if (!userDoc) {
+        const newUser: User = {
+          id: firebaseUser.uid,
+          name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+          email: firebaseUser.email || '',
+          avatar: firebaseUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`
+        };
+        await db.saveUser(newUser);
+      }
     } catch (err: any) {
-      setError("Google login failed.");
+      setError(err.message || "Google login failed.");
       console.error(err);
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleGoogleError = () => {
-    setError("Google Login Failed");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1511,26 +1505,18 @@ const Auth = ({ onAuth }: { onAuth: any }) => {
     setError("");
     setLoading(true);
     try {
-      // Simulate email/password login with local db
-      const id = email.replace(/[^a-zA-Z0-9]/g, '');
-      let user: User;
-      
       if (isLogin) {
-        const existingUser = await db.getUser(id);
-        if (!existingUser) throw new Error("User not found");
-        user = existingUser;
+        await signInWithEmailAndPassword(auth, email, password);
       } else {
-        user = {
-          id,
+        const result = await createUserWithEmailAndPassword(auth, email, password);
+        const newUser: User = {
+          id: result.user.uid,
           name: name || email.split('@')[0],
           email,
-          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${id}`
+          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${result.user.uid}`
         };
-        await db.saveUser(user);
+        await db.saveUser(newUser);
       }
-      
-      localStorage.setItem("colony_user", JSON.stringify(user));
-      window.location.reload();
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -1549,13 +1535,19 @@ const Auth = ({ onAuth }: { onAuth: any }) => {
 
         <div className="space-y-4">
           <div className="flex justify-center w-full">
-            <GoogleLogin
-              onSuccess={handleGoogleSuccess}
-              onError={handleGoogleError}
-              useOneTap
-              theme="filled_black"
-              shape="pill"
-            />
+            <button
+              onClick={handleGoogleLogin}
+              disabled={loading}
+              className="w-full bg-white text-black hover:bg-gray-200 py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24">
+                <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                <path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+              </svg>
+              Continue with Google
+            </button>
           </div>
 
           <div className="flex items-center gap-4 py-2">

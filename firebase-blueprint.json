@@ -1,0 +1,100 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "avatar": { "type": "string" },
+        "wallpaper": { "type": "string" },
+        "bio": { "type": "string" },
+        "phone": { "type": "string" },
+        "emergencyContact": { "type": "string" },
+        "bloodGroup": { "type": "string" },
+        "vehicleNumber": { "type": "string" }
+      },
+      "required": ["id", "name", "email"]
+    },
+    "Post": {
+      "title": "Post",
+      "description": "A feed post",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userAvatar": { "type": "string" },
+        "content": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "likes": { "type": "number" },
+        "comments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "userId": { "type": "string" },
+              "userName": { "type": "string" },
+              "userAvatar": { "type": "string" },
+              "content": { "type": "string" },
+              "timestamp": { "type": "number" }
+            }
+          }
+        }
+      },
+      "required": ["id", "userId", "userName", "content", "timestamp", "likes"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A chat message",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderAvatar": { "type": "string" },
+        "text": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "isAi": { "type": "boolean" }
+      },
+      "required": ["id", "senderId", "senderName", "text", "timestamp"]
+    },
+    "Location": {
+      "title": "Location",
+      "description": "User location for the map",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userAvatar": { "type": "string" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["id", "userId", "userName", "lat", "lng", "timestamp"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles"
+    },
+    "posts/{postId}": {
+      "schema": { "$ref": "#/entities/Post" },
+      "description": "Feed posts"
+    },
+    "messages/{messageId}": {
+      "schema": { "$ref": "#/entities/Message" },
+      "description": "Chat messages"
+    },
+    "locations/{locationId}": {
+      "schema": { "$ref": "#/entities/Location" },
+      "description": "User locations"
+    }
+  }
+}

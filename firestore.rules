@@ -1,0 +1,107 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    function uidUnchanged() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId;
+    }
+    
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidUser() {
+      return hasRequiredFields(['id', 'name', 'email']) &&
+             request.resource.data.id is string &&
+             request.resource.data.name is string &&
+             request.resource.data.email is string;
+    }
+
+    function isValidPost() {
+      return hasRequiredFields(['id', 'userId', 'userName', 'content', 'timestamp', 'likes']) &&
+             request.resource.data.id is string &&
+             request.resource.data.userId is string &&
+             request.resource.data.userName is string &&
+             request.resource.data.content is string &&
+             request.resource.data.timestamp is number &&
+             request.resource.data.likes is number;
+    }
+
+    function isValidMessage() {
+      return hasRequiredFields(['id', 'senderId', 'senderName', 'text', 'timestamp']) &&
+             request.resource.data.id is string &&
+             request.resource.data.senderId is string &&
+             request.resource.data.senderName is string &&
+             request.resource.data.text is string &&
+             request.resource.data.timestamp is number;
+    }
+
+    function isValidLocation() {
+      return hasRequiredFields(['id', 'userId', 'userName', 'lat', 'lng', 'timestamp']) &&
+             request.resource.data.id is string &&
+             request.resource.data.userId is string &&
+             request.resource.data.userName is string &&
+             request.resource.data.lat is number &&
+             request.resource.data.lng is number &&
+             request.resource.data.timestamp is number;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidUser() && request.resource.data.id == userId;
+      allow update: if isOwner(userId) && isValidUser() && request.resource.data.id == resource.data.id;
+      allow delete: if isOwner(userId);
+    }
+
+    match /posts/{postId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidPost() && request.resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && isValidPost() && uidNotModified() && (
+        isDocOwner() || 
+        // Allow others to like/comment if they only change likes/comments
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'comments'])
+      );
+      allow delete: if isDocOwner();
+    }
+
+    match /messages/{messageId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidMessage() && request.resource.data.senderId == request.auth.uid;
+      allow update: if isAuthenticated() && isValidMessage() && request.resource.data.senderId == resource.data.senderId && request.auth.uid == resource.data.senderId;
+      allow delete: if isAuthenticated() && request.auth.uid == resource.data.senderId;
+    }
+
+    match /locations/{locationId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidLocation() && request.resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && isValidLocation() && uidNotModified() && request.auth.uid == resource.data.userId;
+      allow delete: if isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+  }
+}
