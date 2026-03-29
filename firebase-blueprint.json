@@ -56,7 +56,8 @@
         "content": { "type": "string", "description": "The text content of the message." },
         "image": { "type": "string", "description": "The URL of an image attached to the message." },
         "voice": { "type": "string", "description": "The URL of a voice recording attached to the message." },
-        "timestamp": { "type": "number", "description": "The creation timestamp of the message." }
+        "timestamp": { "type": "number", "description": "The creation timestamp of the message." },
+        "triggeredBy": { "type": "string", "description": "The ID of the user who triggered this message (for AI responses)." }
       },
       "required": ["id", "userId", "userName", "timestamp"]
     },

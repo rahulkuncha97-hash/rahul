@@ -1,5 +1,8 @@
 import React, { Component, useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { GlassCard } from "@/components/ui/Card";
+import { FloatingOrbs } from "@/components/ui/FloatingOrbs";
+import { VoicePlayer, VoiceRecorder } from "@/components/ui/VoiceControls";
 import { 
   Home, 
   Rss, 
@@ -41,7 +44,6 @@ import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { 
   collection, 
-  addDoc, 
   onSnapshot, 
   query, 
   orderBy, 
@@ -79,230 +81,6 @@ function cn(...inputs: ClassValue[]) {
 }
 
 // --- Components ---
-
-const GlassCard = ({ children, className, tilt = false, ...props }: { children: React.ReactNode, className?: string, tilt?: boolean, [key: string]: any }) => {
-  const [rotate, setRotate] = useState({ x: 0, y: 0 });
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!tilt) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    const centerX = rect.width / 2;
-    const centerY = rect.height / 2;
-    const rotateX = (y - centerY) / 10;
-    const rotateY = (centerX - x) / 10;
-    setRotate({ x: rotateX, y: rotateY });
-  };
-  const handleMouseLeave = () => setRotate({ x: 0, y: 0 });
-
-  return (
-    <motion.div
-      {...props}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
-      animate={{ rotateX: rotate.x, rotateY: rotate.y }}
-      transition={{ type: "spring", stiffness: 300, damping: 20 }}
-      className={cn(
-        "bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl overflow-hidden shadow-xl",
-        className
-      )}
-      style={{ perspective: 1000 }}
-    >
-      {children}
-    </motion.div>
-  );
-};
-
-const FloatingOrbs = () => (
-  <div className="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
-    <motion.div
-      animate={{
-        x: [0, 100, -50, 0],
-        y: [0, -100, 50, 0],
-        scale: [1, 1.2, 0.8, 1],
-      }}
-      transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
-      className="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600/30 rounded-full blur-[100px]"
-    />
-    <motion.div
-      animate={{
-        x: [0, -150, 100, 0],
-        y: [0, 150, -100, 0],
-        scale: [1, 0.9, 1.3, 1],
-      }}
-      transition={{ duration: 25, repeat: Infinity, ease: "linear" }}
-      className="absolute bottom-1/4 right-1/4 w-[500px] h-[500px] bg-blue-600/20 rounded-full blur-[120px]"
-    />
-    <motion.div
-      animate={{
-        x: [0, 200, -100, 0],
-        y: [0, 100, -200, 0],
-        scale: [1, 1.1, 0.9, 1],
-      }}
-      transition={{ duration: 30, repeat: Infinity, ease: "linear" }}
-      className="absolute top-1/2 left-1/2 w-80 h-80 bg-pink-600/20 rounded-full blur-[100px]"
-    />
-  </div>
-);
-
-const VoicePlayer = ({ url }: { url: string }) => {
-  const [playing, setPlaying] = useState(false);
-  const audioRef = useRef<HTMLAudioElement>(null);
-
-  const toggle = () => {
-    if (playing) {
-      audioRef.current?.pause();
-    } else {
-      audioRef.current?.play();
-    }
-    setPlaying(!playing);
-  };
-
-  return (
-    <div className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-full px-4 py-2 w-fit">
-      <audio ref={audioRef} src={url} onEnded={() => setPlaying(false)} />
-      <button onClick={toggle} className="text-purple-400 hover:text-purple-300 transition-colors">
-        {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
-      </button>
-      <div className="w-24 h-1 bg-white/10 rounded-full overflow-hidden">
-        <motion.div 
-          animate={playing ? { x: ["-100%", "100%"] } : { x: "-100%" }}
-          transition={playing ? { duration: 1.5, repeat: Infinity, ease: "linear" } : {}}
-          className="w-full h-full bg-purple-500"
-        />
-      </div>
-    </div>
-  );
-};
-
-const VoiceRecorder = ({ onRecordingComplete, label }: { onRecordingComplete: (blob: Blob) => void, label?: string }) => {
-  const [recording, setRecording] = useState(false);
-  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
-  const [duration, setDuration] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const timerRef = useRef<any>(null);
-
-  const getSupportedMimeType = () => {
-    const types = ["audio/webm", "audio/ogg", "audio/mp4", "audio/wav"];
-    for (const type of types) {
-      if (MediaRecorder.isTypeSupported(type)) return type;
-    }
-    return "";
-  };
-
-  const startRecording = async () => {
-    setError(null);
-    
-    // Check for secure context (HTTPS)
-    if (!window.isSecureContext) {
-      setError("Microphone requires a secure (HTTPS) connection.");
-      return;
-    }
-
-    // Check for API support
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setError("Microphone recording is not supported in this browser.");
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        } 
-      });
-      const mimeType = getSupportedMimeType();
-      const recorder = new MediaRecorder(stream, { mimeType });
-      const chunks: Blob[] = [];
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
-      };
-      
-      recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: mimeType || "audio/webm" });
-        onRecordingComplete(blob);
-        stream.getTracks().forEach(track => track.stop());
-      };
-
-      recorder.start();
-      setMediaRecorder(recorder);
-      setRecording(true);
-      setDuration(0);
-      timerRef.current = setInterval(() => setDuration(prev => prev + 1), 1000);
-    } catch (err: any) {
-      console.error("Error accessing microphone:", err);
-      
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setError("Microphone blocked. Please enable it in browser AND system settings.");
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        setError("No microphone found. Please connect a mic.");
-      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-        setError("Microphone is busy. Close other apps using it.");
-      } else {
-        setError(`Mic Error: ${err.message || "Could not access"}`);
-      }
-      
-      // Keep error visible longer for reading
-      setTimeout(() => setError(null), 8000);
-    }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorder && mediaRecorder.state !== "inactive") {
-      mediaRecorder.stop();
-    }
-    setRecording(false);
-    if (timerRef.current) clearInterval(timerRef.current);
-  };
-
-  return (
-    <div className="flex items-center gap-3 relative">
-      {recording ? (
-        <div className="flex items-center gap-3 bg-red-500/20 border border-red-500/40 rounded-full px-4 py-2.5 shadow-[0_0_15px_rgba(239,68,68,0.3)]">
-          <motion.div 
-            animate={{ scale: [1, 1.2, 1] }}
-            transition={{ duration: 1, repeat: Infinity }}
-            className="w-2.5 h-2.5 bg-red-500 rounded-full" 
-          />
-          <span className="text-xs font-mono font-bold text-red-400">{Math.floor(duration / 60)}:{(duration % 60).toString().padStart(2, '0')}</span>
-          <button 
-            type="button"
-            onClick={(e) => { e.stopPropagation(); stopRecording(); }} 
-            className="p-1.5 bg-red-500 rounded-full text-white hover:bg-red-600 transition-colors"
-          >
-            <Square size={14} fill="currentColor" />
-          </button>
-        </div>
-      ) : (
-        <div className="flex flex-col items-start gap-1">
-          <button 
-            type="button"
-            onClick={(e) => { e.stopPropagation(); startRecording(); }} 
-            className={cn(
-              "flex items-center gap-2 px-3 py-2.5 bg-white/5 hover:bg-white/10 rounded-full text-gray-400 hover:text-purple-400 transition-all border border-white/5",
-              label && "pr-4"
-            )}
-          >
-            <Mic size={20} />
-            {label && <span className="text-xs font-bold uppercase tracking-widest">{label}</span>}
-          </button>
-          {error && (
-            <motion.span 
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="text-[8px] text-red-500 font-bold absolute -bottom-4 left-0 whitespace-nowrap uppercase tracking-widest"
-            >
-              {error}
-            </motion.span>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
 
 const mapStyles = [
   { elementType: "geometry", stylers: [{ color: "#242f3e" }] },
@@ -594,6 +372,21 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
   const [preview, setPreview] = useState<string | null>(null);
   const [voicePreview, setVoicePreview] = useState<string | null>(null);
   const [suggesting, setSuggesting] = useState(false);
+  const [posting, setPosting] = useState(false);
+  const [optimisticPosts, setOptimisticPosts] = useState<(Post & { isOptimistic?: boolean })[]>([]);
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf("image") !== -1 || items[i].type.indexOf("video") !== -1) {
+        const file = items[i].getAsFile();
+        if (file) {
+          setImage(file);
+          setPreview(URL.createObjectURL(file));
+        }
+      }
+    }
+  };
 
   const uploadFile = async (file: File | Blob, path: string) => {
     const fileRef = ref(storage, `${path}/${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
@@ -622,38 +415,64 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSuggesting(true);
     
+    const currentContent = content;
+    const currentImage = image;
+    const currentVoice = voice;
+    const currentPreview = preview;
+    const currentVoicePreview = voicePreview;
+
+    const tempId = "temp_" + Date.now();
+    const optimisticPost: Post & { isOptimistic?: boolean } = {
+      id: tempId,
+      userId: user.id,
+      userName: user.name,
+      userAvatar: user.avatar || "",
+      content: currentContent,
+      image: currentPreview || "",
+      voice: currentVoicePreview || "",
+      timestamp: Date.now(),
+      likes: [],
+      comments: [],
+      isOptimistic: true
+    };
+
+    setOptimisticPosts(prev => [optimisticPost, ...prev]);
+    
+    setContent("");
+    setImage(null);
+    setVoice(null);
+    setPreview(null);
+    setVoicePreview(null);
+    setShowCreate(false);
+    setPosting(true);
+
     try {
       let imageUrl = "";
       let voiceUrl = "";
       
-      if (image) imageUrl = await uploadFile(image, "posts/images");
-      if (voice) voiceUrl = await uploadFile(voice, "posts/voice");
+      if (currentImage) imageUrl = await uploadFile(currentImage, "posts/images");
+      if (currentVoice) voiceUrl = await uploadFile(currentVoice, "posts/voice");
 
-      await addDoc(collection(db, "posts"), {
+      const postRef = doc(collection(db, "posts"));
+      await setDoc(postRef, {
+        id: postRef.id,
         userId: user.id,
         userName: user.name,
         userAvatar: user.avatar || "",
-        content,
+        content: currentContent,
         image: imageUrl,
         voice: voiceUrl,
         timestamp: Date.now(),
         likes: [],
         comments: []
       });
-
-      setContent("");
-      setImage(null);
-      setVoice(null);
-      setPreview(null);
-      setVoicePreview(null);
-      setShowCreate(false);
     } catch (err) {
       console.error("Post error:", err);
       handleFirestoreError(err, OperationType.CREATE, "posts");
     } finally {
-      setSuggesting(false);
+      setPosting(false);
+      setOptimisticPosts(prev => prev.filter(p => p.id !== tempId));
     }
   };
 
@@ -706,6 +525,7 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
                   <textarea
                     value={content}
                     onChange={(e) => setContent(e.target.value)}
+                    onPaste={handlePaste}
                     placeholder="What's happening in the colony?"
                     className="w-full bg-white/5 border border-white/10 rounded-xl p-4 focus:outline-none focus:border-purple-500/50 min-h-[100px] resize-none text-sm"
                     required
@@ -729,7 +549,18 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
                     setVoice(blob);
                     setVoicePreview(URL.createObjectURL(blob));
                   }} />
-                  <button type="submit" className="bg-purple-600 hover:bg-purple-500 px-6 py-2.5 rounded-xl text-sm font-bold transition-colors">Post</button>
+                  <button 
+                    type="submit" 
+                    disabled={posting}
+                    className="bg-purple-600 hover:bg-purple-500 px-6 py-2.5 rounded-xl text-sm font-bold transition-colors disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {posting ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        Posting...
+                      </>
+                    ) : "Post"}
+                  </button>
                 </div>
                 {preview && (
                   <div className="relative rounded-xl overflow-hidden aspect-video border border-white/10">
@@ -750,17 +581,19 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
       </AnimatePresence>
 
       <div className="space-y-4">
-        {posts.map(post => (
-          <GlassCard key={post.id} tilt className="group">
+        {[...optimisticPosts, ...posts].map(post => (
+          <GlassCard key={post.id} tilt className={cn("group", post.isOptimistic && "opacity-70")}>
             <div className="p-3 flex items-center justify-between">
               <div className="flex items-center gap-2.5">
                 <img src={post.userAvatar} className="w-8 h-8 rounded-full border border-white/10" referrerPolicy="no-referrer" />
                 <div>
                   <p className="font-bold text-xs">{post.userName}</p>
-                  <p className="text-[9px] text-gray-500 uppercase tracking-widest">{formatDistanceToNow(post.timestamp)} ago</p>
+                  <p className="text-[9px] text-gray-500 uppercase tracking-widest">
+                    {post.isOptimistic ? "Posting..." : `${formatDistanceToNow(post.timestamp)} ago`}
+                  </p>
                 </div>
               </div>
-              {post.userId === user.id && (
+              {post.userId === user.id && !post.isOptimistic && (
                 <button onClick={() => handleDelete(post.id)} className="text-gray-500 hover:text-red-400 transition-colors">
                   <Trash2 size={16} />
                 </button>
@@ -771,7 +604,12 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
             </div>
             {post.image && (
               <div className="relative aspect-video overflow-hidden border-y border-white/5">
-                {post.image.endsWith('.mp4') || post.image.endsWith('.mov') ? (
+                {post.isOptimistic && (
+                  <div className="absolute inset-0 bg-black/20 flex items-center justify-center z-10">
+                    <div className="w-8 h-8 border-2 border-white/50 border-t-white rounded-full animate-spin" />
+                  </div>
+                )}
+                {post.image.endsWith('.mp4') || post.image.endsWith('.mov') || post.image.startsWith('blob:') ? (
                   <video src={post.image} controls className="w-full h-full object-cover" />
                 ) : (
                   <img 
@@ -789,6 +627,7 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
             )}
             <div className="p-3 flex items-center gap-5">
               <button 
+                disabled={post.isOptimistic}
                 onClick={async () => {
                   const isLiked = post.likes.includes(user.id);
                   const newLikes = isLiked 
@@ -802,21 +641,23 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
                 }}
                 className={cn(
                   "flex items-center gap-1.5 transition-colors",
-                  post.likes.includes(user.id) ? "text-pink-500" : "text-gray-400 hover:text-pink-400"
+                  post.likes.includes(user.id) ? "text-pink-500" : "text-gray-400 hover:text-pink-400",
+                  post.isOptimistic && "opacity-50 cursor-not-allowed"
                 )}
               >
                 <Heart size={18} fill={post.likes.includes(user.id) ? "currentColor" : "none"} />
                 <span className="text-[10px] font-bold">{post.likes.length}</span>
               </button>
-              <button className="flex items-center gap-1.5 text-gray-400 hover:text-blue-400 transition-colors">
+              <button className="flex items-center gap-1.5 text-gray-400 hover:text-blue-400 transition-colors" disabled={post.isOptimistic}>
                 <MessageCircle size={18} />
                 <span className="text-[10px] font-bold">{post.comments.length}</span>
               </button>
             </div>
-            <CommentSection post={post} user={user} />
+            {!post.isOptimistic && <CommentSection post={post} user={user} />}
           </GlassCard>
         ))}
       </div>
+
     </motion.div>
   );
 };
@@ -825,11 +666,27 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
   const [content, setContent] = useState("");
   const [aiMode, setAiMode] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
-  const [pendingMedia, setPendingMedia] = useState<string | null>(null);
-  const [pendingVoice, setPendingVoice] = useState<string | null>(null);
+  const [pendingMedia, setPendingMedia] = useState<File | null>(null);
+  const [pendingVoice, setPendingVoice] = useState<Blob | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [localMediaPreview, setLocalMediaPreview] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [optimisticMessages, setOptimisticMessages] = useState<(Message & { isOptimistic?: boolean })[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const longPressTimer = useRef<any>(null);
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf("image") !== -1 || items[i].type.indexOf("video") !== -1) {
+        const file = items[i].getAsFile();
+        if (file) {
+          handleFileUpload(file);
+        }
+      }
+    }
+  };
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -841,36 +698,14 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
     return await getDownloadURL(fileRef);
   };
 
-  const handleFileUpload = async (file: File) => {
-    setUploading(true);
-    try {
-      const url = await uploadFile(file, "chat/media");
-      setPendingMedia(url);
-    } catch (err) {
-      console.error("Upload failed:", err);
-    } finally {
-      setUploading(false);
-    }
+  const handleFileUpload = (file: File) => {
+    const localUrl = URL.createObjectURL(file);
+    setLocalMediaPreview(localUrl);
+    setPendingMedia(file);
   };
 
-  const handleVoiceUpload = async (blob: Blob) => {
-    setUploading(true);
-    try {
-      const url = await uploadFile(blob, "chat/voice");
-      
-      await addDoc(collection(db, "messages"), {
-        userId: user.id,
-        userName: user.name,
-        content: "",
-        voice: url,
-        timestamp: Date.now()
-      });
-      
-    } catch (err) {
-      console.error("Voice upload failed:", err);
-    } finally {
-      setUploading(false);
-    }
+  const handleVoiceUpload = (blob: Blob) => {
+    setPendingVoice(blob);
   };
 
   const handleSend = async (e: React.FormEvent) => {
@@ -883,29 +718,76 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
       setAiLoading(true);
       
       const response = await generateAIResponse(userMsg);
-      await addDoc(collection(db, "messages"), {
+      const msgRef = doc(collection(db, "messages"));
+      await setDoc(msgRef, {
+        id: msgRef.id,
         userId: "ai-assistant",
         userName: "Colony AI",
         content: response,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        triggeredBy: user.id
       });
       setAiLoading(false);
     } else {
+      const currentContent = content;
+      const currentMedia = pendingMedia;
+      const currentLocalPreview = localMediaPreview;
+      const currentVoice = pendingVoice;
+
+      const tempId = "temp_" + Date.now();
+      const optimisticMsg: Message & { isOptimistic?: boolean } = {
+        id: tempId,
+        userId: user.id,
+        userName: user.name,
+        content: currentContent,
+        image: currentLocalPreview || "",
+        voice: currentVoice ? URL.createObjectURL(currentVoice) : "",
+        timestamp: Date.now(),
+        isOptimistic: true
+      };
+
+      setOptimisticMessages(prev => [...prev, optimisticMsg]);
+      
+      setContent("");
+      setPendingMedia(null);
+      setLocalMediaPreview(null);
+      setPendingVoice(null);
+
       try {
-        await addDoc(collection(db, "messages"), {
+        let mediaUrl = "";
+        let voiceUrl = "";
+
+        if (currentMedia) {
+          mediaUrl = await uploadFile(currentMedia, "chat/media");
+        }
+        if (currentVoice) {
+          voiceUrl = await uploadFile(currentVoice, "chat/voice");
+        }
+
+        const msgRef = doc(collection(db, "messages"));
+        await setDoc(msgRef, {
+          id: msgRef.id,
           userId: user.id,
           userName: user.name,
-          content,
-          image: pendingMedia,
-          voice: pendingVoice,
+          content: currentContent,
+          image: mediaUrl,
+          voice: voiceUrl,
           timestamp: Date.now()
         });
-        setContent("");
-        setPendingMedia(null);
-        setPendingVoice(null);
       } catch (error) {
+        console.error("Send error:", error);
         handleFirestoreError(error, OperationType.CREATE, "messages");
+      } finally {
+        setOptimisticMessages(prev => prev.filter(m => m.id !== tempId));
       }
+    }
+  };
+
+  const handleDeleteMessage = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, "messages", id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `messages/${id}`);
     }
   };
 
@@ -939,37 +821,91 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
       </header>
 
       <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
-        {messages.map((msg, i) => {
+        {[...messages, ...optimisticMessages].map((msg) => {
           const isMe = msg.userId === user.id;
           const isAI = msg.userId === "ai-assistant";
+          const canDelete = !msg.isOptimistic && (isMe || (isAI && msg.triggeredBy === user.id));
+          
           return (
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               key={msg.id}
-              className={cn("flex flex-col", isMe ? "items-end" : "items-start")}
+              className={cn("flex flex-col", isMe ? "items-end" : "items-start", msg.isOptimistic && "opacity-70")}
+              onContextMenu={(e) => {
+                if (canDelete) e.preventDefault();
+              }}
             >
               {!isMe && <p className="text-[9px] text-gray-500 ml-1 mb-0.5 font-bold uppercase tracking-widest">{msg.userName}</p>}
-              <div className={cn(
-                "max-w-[85%] p-3 rounded-2xl shadow-lg text-sm leading-relaxed space-y-2",
-                isMe ? "bg-purple-600 text-white rounded-tr-none" : 
-                isAI ? "bg-purple-900/40 text-purple-100 rounded-tl-none border border-purple-500/30" :
-                "bg-white/10 text-gray-200 rounded-tl-none border border-white/10"
-              )}>
-                {msg.image && (
-                  <div className="rounded-lg overflow-hidden border border-white/10">
-                    {msg.image.endsWith('.mp4') || msg.image.endsWith('.mov') ? (
-                      <video src={msg.image} controls className="w-full max-h-60 object-cover" />
-                    ) : (
-                      <img src={msg.image} className="w-full max-h-60 object-cover" referrerPolicy="no-referrer" />
-                    )}
-                  </div>
-                )}
-                {msg.voice && <VoicePlayer url={msg.voice} />}
-                {msg.content && <p>{msg.content}</p>}
-                <p className={cn("text-[8px] mt-1 opacity-50", isMe ? "text-right" : "text-left")}>
-                  {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </p>
+              <div className="relative group">
+                <AnimatePresence>
+                  {deletingId === msg.id && (
+                    <motion.div 
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      className="absolute inset-0 z-10 flex items-center justify-center bg-black/60 backdrop-blur-sm rounded-2xl gap-2"
+                    >
+                      <button 
+                        onClick={() => {
+                          handleDeleteMessage(msg.id);
+                          setDeletingId(null);
+                        }}
+                        className="bg-red-600 p-2 rounded-full text-white hover:bg-red-500"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                      <button 
+                        onClick={() => setDeletingId(null)}
+                        className="bg-white/10 p-2 rounded-full text-white hover:bg-white/20"
+                      >
+                        <X size={16} />
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+                
+                <motion.div 
+                  whileTap={canDelete ? { scale: 0.98 } : {}}
+                  onPointerDown={() => {
+                    if (!canDelete) return;
+                    longPressTimer.current = setTimeout(() => {
+                      setDeletingId(msg.id);
+                    }, 600);
+                  }}
+                  onPointerUp={() => {
+                    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+                  }}
+                  onPointerLeave={() => {
+                    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+                  }}
+                  className={cn(
+                    "max-w-[85%] p-3 rounded-2xl shadow-lg text-sm leading-relaxed space-y-2 cursor-pointer select-none relative",
+                    isMe ? "bg-purple-600 text-white rounded-tr-none" : 
+                    isAI ? "bg-purple-900/40 text-purple-100 rounded-tl-none border border-purple-500/30" :
+                    "bg-white/10 text-gray-200 rounded-tl-none border border-white/10"
+                  )}
+                >
+                  {msg.isOptimistic && (
+                    <div className="absolute -left-6 top-1/2 -translate-y-1/2">
+                      <div className="w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
+                    </div>
+                  )}
+                  {msg.image && (
+                    <div className="rounded-lg overflow-hidden border border-white/10">
+                      {msg.image.endsWith('.mp4') || msg.image.endsWith('.mov') || msg.image.startsWith('blob:') ? (
+                        <video src={msg.image} controls className="w-full max-h-60 object-cover" />
+                      ) : (
+                        <img src={msg.image} className="w-full max-h-60 object-cover" referrerPolicy="no-referrer" />
+                      )}
+                    </div>
+                  )}
+                  {msg.voice && <VoicePlayer url={msg.voice} />}
+                  {msg.content && <p>{msg.content}</p>}
+                  <p className={cn("text-[8px] mt-1 opacity-50", isMe ? "text-right" : "text-left")}>
+                    {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                </motion.div>
               </div>
             </motion.div>
           );
@@ -983,19 +919,29 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
       </div>
 
       <div className="space-y-2 mt-4">
-        {pendingMedia && (
-          <div className="relative w-20 h-20 rounded-lg overflow-hidden border border-purple-500/50">
-            {pendingMedia.endsWith('.mp4') || pendingMedia.endsWith('.mov') ? (
-              <video src={pendingMedia} className="w-full h-full object-cover" />
-            ) : (
-              <img src={pendingMedia} className="w-full h-full object-cover" />
+        {(pendingMedia || localMediaPreview) && (
+          <div className="relative w-24 h-24 rounded-lg overflow-hidden border border-purple-500/50 group">
+            {localMediaPreview && (
+              localMediaPreview.includes('video') || localMediaPreview.includes('mp4') ? (
+                <video src={localMediaPreview} className="w-full h-full object-cover" />
+              ) : (
+                <img src={localMediaPreview} className="w-full h-full object-cover" />
+              )
             )}
-            <button onClick={() => setPendingMedia(null)} className="absolute top-1 right-1 bg-black/50 p-0.5 rounded-full text-white"><X size={12}/></button>
+            <button 
+              onClick={() => {
+                setPendingMedia(null);
+                setLocalMediaPreview(null);
+              }} 
+              className="absolute top-1 right-1 bg-black/50 p-1 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity"
+            >
+              <X size={12}/>
+            </button>
           </div>
         )}
         {pendingVoice && (
           <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-full px-3 py-1.5 w-fit">
-            <VoicePlayer url={pendingVoice} />
+            <VoicePlayer url={URL.createObjectURL(pendingVoice)} />
             <button onClick={() => setPendingVoice(null)} className="text-gray-500 hover:text-red-400"><X size={14}/></button>
           </div>
         )}
@@ -1011,13 +957,15 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
             <button 
               type="button" 
               onClick={() => fileInputRef.current?.click()}
-              className="text-gray-400 hover:text-blue-400 transition-colors"
+              className="text-gray-400 hover:text-blue-400 transition-colors flex items-center gap-1"
             >
               <ImageIcon size={20} />
+              <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:inline">Media</span>
             </button>
             <input
               value={content}
               onChange={(e) => setContent(e.target.value)}
+              onPaste={handlePaste}
               placeholder={aiMode ? "Ask AI anything..." : "Message community..."}
               className="flex-1 bg-transparent border-none focus:outline-none text-sm"
             />
@@ -1025,8 +973,7 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
           </div>
           <button 
             type="submit" 
-            disabled={uploading}
-            className="bg-purple-600 hover:bg-purple-500 p-3 rounded-full transition-all shadow-lg shadow-purple-500/20 disabled:opacity-50"
+            className="bg-purple-600 hover:bg-purple-500 p-3 rounded-full transition-all shadow-lg shadow-purple-500/20"
           >
             <Send size={20} />
           </button>

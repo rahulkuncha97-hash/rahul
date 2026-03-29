@@ -64,7 +64,7 @@ service cloud.firestore {
     }
 
     function isDocOwner() {
-      return isAuthenticated() && request.auth.uid == resource.data.userId;
+      return isAuthenticated() && (request.auth.uid == resource.data.userId || request.auth.uid == resource.data.triggeredBy);
     }
 
     function isValidUser(data) {
@@ -91,7 +91,8 @@ service cloud.firestore {
              data.userId is string &&
              data.userName is string && data.userName.size() > 0 && data.userName.size() < 100 &&
              data.timestamp is number &&
-             (data.content is string || data.image is string || data.voice is string);
+             (data.content is string || data.image is string || data.voice is string) &&
+             (!('triggeredBy' in data) || data.triggeredBy is string);
     }
 
     function isValidLocation(data) {
@@ -131,6 +132,7 @@ service cloud.firestore {
     match /messages/{messageId} {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated() && isValidMessage(request.resource.data) && request.resource.data.userId == request.auth.uid;
+      allow delete: if isDocOwner();
     }
 
     match /locations/{userId} {

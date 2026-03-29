@@ -36,4 +36,5 @@ export interface Message {
   image?: string;
   voice?: string;
   timestamp: number;
+  triggeredBy?: string;
 }
