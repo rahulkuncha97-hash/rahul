@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { Component, useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   Home, 
@@ -35,13 +35,43 @@ import {
   Square
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
+import { GoogleMap, useJsApiLoader, Marker } from "@react-google-maps/api";
 import { formatDistanceToNow } from "date-fns";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { GoogleMap, useJsApiLoader, Marker } from "@react-google-maps/api";
-import socket from "./lib/socket";
+import { 
+  collection, 
+  addDoc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  doc, 
+  updateDoc, 
+  deleteDoc, 
+  setDoc, 
+  getDoc,
+  serverTimestamp,
+  limit,
+  where
+} from "firebase/firestore";
+import { 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged, 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword,
+  updateProfile
+} from "firebase/auth";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { db, auth, googleProvider, storage } from "./firebase";
+import { handleFirestoreError, OperationType } from "./lib/firebase-utils";
 import { User, Post, Message, Comment } from "./types";
 import { summarizeFeed, suggestPost, generateAIResponse } from "./services/aiService";
+
+// --- Error Boundary ---
+const ErrorBoundary = ({ children }: { children: React.ReactNode }) => {
+  return <>{children}</>;
+};
 
 // --- Utils ---
 function cn(...inputs: ClassValue[]) {
@@ -162,8 +192,27 @@ const VoiceRecorder = ({ onRecordingComplete, label }: { onRecordingComplete: (b
 
   const startRecording = async () => {
     setError(null);
+    
+    // Check for secure context (HTTPS)
+    if (!window.isSecureContext) {
+      setError("Microphone requires a secure (HTTPS) connection.");
+      return;
+    }
+
+    // Check for API support
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError("Microphone recording is not supported in this browser.");
+      return;
+    }
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } 
+      });
       const mimeType = getSupportedMimeType();
       const recorder = new MediaRecorder(stream, { mimeType });
       const chunks: Blob[] = [];
@@ -185,12 +234,19 @@ const VoiceRecorder = ({ onRecordingComplete, label }: { onRecordingComplete: (b
       timerRef.current = setInterval(() => setDuration(prev => prev + 1), 1000);
     } catch (err: any) {
       console.error("Error accessing microphone:", err);
+      
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setError("Microphone access denied. Please check browser settings.");
+        setError("Microphone blocked. Please enable it in browser AND system settings.");
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        setError("No microphone found. Please connect a mic.");
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        setError("Microphone is busy. Close other apps using it.");
       } else {
-        setError("Could not access microphone.");
+        setError(`Mic Error: ${err.message || "Could not access"}`);
       }
-      setTimeout(() => setError(null), 5000);
+      
+      // Keep error visible longer for reading
+      setTimeout(() => setError(null), 8000);
     }
   };
 
@@ -264,16 +320,27 @@ const CommentSection = ({ post, user }: { post: Post, user: User }) => {
   const [comment, setComment] = useState("");
   const [showComments, setShowComments] = useState(false);
 
-  const handleAddComment = (e: React.FormEvent) => {
+  const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!comment.trim()) return;
-    socket.emit("add_comment", {
-      postId: post.id,
+    
+    const newComment: Comment = {
+      id: Math.random().toString(36).substr(2, 9),
       userId: user.id,
       userName: user.name,
-      content: comment
-    });
-    setComment("");
+      content: comment,
+      timestamp: Date.now()
+    };
+
+    try {
+      const postRef = doc(db, "posts", post.id);
+      await updateDoc(postRef, {
+        comments: [...post.comments, newComment]
+      });
+      setComment("");
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `posts/${post.id}`);
+    }
   };
 
   return (
@@ -321,6 +388,14 @@ const CommentSection = ({ post, user }: { post: Post, user: User }) => {
 // --- Main App ---
 
 export default function ColonyConnect() {
+  return (
+    <ErrorBoundary>
+      <ColonyConnectApp />
+    </ErrorBoundary>
+  );
+}
+
+function ColonyConnectApp() {
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState("home");
   const [posts, setPosts] = useState<Post[]>([]);
@@ -329,53 +404,54 @@ export default function ColonyConnect() {
   const [wallpaper, setWallpaper] = useState<string | null>(null);
 
   useEffect(() => {
-    // Check local storage for session and wallpaper
-    const savedUser = localStorage.getItem("colony_user");
+    // Auth state listener
+    const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
+        if (userDoc.exists()) {
+          setUser(userDoc.data() as User);
+        } else {
+          const newUser: User = {
+            id: firebaseUser.uid,
+            name: firebaseUser.displayName || "Resident",
+            email: firebaseUser.email || "",
+            avatar: firebaseUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`
+          };
+          await setDoc(doc(db, "users", firebaseUser.uid), newUser);
+          setUser(newUser);
+        }
+      } else {
+        setUser(null);
+      }
+      setLoading(false);
+    });
+
+    // Wallpaper from local storage
     const savedWallpaper = localStorage.getItem("colony_wallpaper");
-    if (savedUser) {
-      setUser(JSON.parse(savedUser));
-    }
-    if (savedWallpaper) {
-      setWallpaper(savedWallpaper);
-    }
-    setLoading(false);
+    if (savedWallpaper) setWallpaper(savedWallpaper);
 
-    // Fetch initial data
-    fetch("/api/posts").then(res => res.json()).then(setPosts);
-    fetch("/api/chat").then(res => res.json()).then(setMessages);
+    // Firestore listeners
+    const postsQuery = query(collection(db, "posts"), orderBy("timestamp", "desc"), limit(50));
+    const unsubscribePosts = onSnapshot(postsQuery, (snapshot) => {
+      const postsData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Post));
+      setPosts(postsData);
+    }, (error) => handleFirestoreError(error, OperationType.LIST, "posts"));
 
-    // Socket listeners
-    socket.on("new_post", (post: Post) => {
-      setPosts(prev => [post, ...prev]);
-    });
-
-    socket.on("post_deleted", (id: string) => {
-      setPosts(prev => prev.filter(p => p.id !== id));
-    });
-
-    socket.on("receive_message", (msg: Message) => {
-      setMessages(prev => [...prev, msg]);
-    });
-
-    socket.on("comment_added", ({ postId, comment }) => {
-      setPosts(prev => prev.map(p => p.id === postId ? { ...p, comments: [...p.comments, comment] } : p));
-    });
-
-    socket.on("post_liked", ({ postId, likes }) => {
-      setPosts(prev => prev.map(p => p.id === postId ? { ...p, likes } : p));
-    });
+    const messagesQuery = query(collection(db, "messages"), orderBy("timestamp", "asc"), limit(100));
+    const unsubscribeMessages = onSnapshot(messagesQuery, (snapshot) => {
+      const messagesData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Message));
+      setMessages(messagesData);
+    }, (error) => handleFirestoreError(error, OperationType.LIST, "messages"));
 
     return () => {
-      socket.off("new_post");
-      socket.off("post_deleted");
-      socket.off("receive_message");
-      socket.off("comment_added");
-      socket.off("post_liked");
+      unsubscribeAuth();
+      unsubscribePosts();
+      unsubscribeMessages();
     };
   }, []);
 
-  const handleLogout = () => {
-    localStorage.removeItem("colony_user");
+  const handleLogout = async () => {
+    await signOut(auth);
     setUser(null);
   };
 
@@ -519,6 +595,12 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
   const [voicePreview, setVoicePreview] = useState<string | null>(null);
   const [suggesting, setSuggesting] = useState(false);
 
+  const uploadFile = async (file: File | Blob, path: string) => {
+    const fileRef = ref(storage, `${path}/${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
+    await uploadBytes(fileRef, file);
+    return await getDownloadURL(fileRef);
+  };
+
   const handleAISuggest = async () => {
     if (!content.trim()) {
       alert("Please type a topic first (e.g., 'community garden' or 'lost keys')");
@@ -540,35 +622,47 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const formData = new FormData();
-    formData.append("userId", user.id);
-    formData.append("userName", user.name);
-    formData.append("userAvatar", user.avatar || "");
-    formData.append("content", content);
-    if (image) formData.append("image", image);
-    if (voice) formData.append("voice", voice, "voice.ogg");
-
+    setSuggesting(true);
+    
     try {
-      const res = await fetch("/api/posts", { method: "POST", body: formData });
-      if (res.ok) {
-        setContent("");
-        setImage(null);
-        setVoice(null);
-        setPreview(null);
-        setVoicePreview(null);
-        setShowCreate(false);
-      } else {
-        const err = await res.json();
-        alert(`Failed to post: ${err.error || "Unknown error"}`);
-      }
+      let imageUrl = "";
+      let voiceUrl = "";
+      
+      if (image) imageUrl = await uploadFile(image, "posts/images");
+      if (voice) voiceUrl = await uploadFile(voice, "posts/voice");
+
+      await addDoc(collection(db, "posts"), {
+        userId: user.id,
+        userName: user.name,
+        userAvatar: user.avatar || "",
+        content,
+        image: imageUrl,
+        voice: voiceUrl,
+        timestamp: Date.now(),
+        likes: [],
+        comments: []
+      });
+
+      setContent("");
+      setImage(null);
+      setVoice(null);
+      setPreview(null);
+      setVoicePreview(null);
+      setShowCreate(false);
     } catch (err) {
       console.error("Post error:", err);
-      alert("Failed to connect to server. Please try again.");
+      handleFirestoreError(err, OperationType.CREATE, "posts");
+    } finally {
+      setSuggesting(false);
     }
   };
 
   const handleDelete = async (id: string) => {
-    await fetch(`/api/posts/${id}`, { method: "DELETE" });
+    try {
+      await deleteDoc(doc(db, "posts", id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `posts/${id}`);
+    }
   };
 
   return (
@@ -695,7 +789,17 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
             )}
             <div className="p-3 flex items-center gap-5">
               <button 
-                onClick={() => socket.emit("like_post", { postId: post.id, userId: user.id })}
+                onClick={async () => {
+                  const isLiked = post.likes.includes(user.id);
+                  const newLikes = isLiked 
+                    ? post.likes.filter(id => id !== user.id)
+                    : [...post.likes, user.id];
+                  try {
+                    await updateDoc(doc(db, "posts", post.id), { likes: newLikes });
+                  } catch (error) {
+                    handleFirestoreError(error, OperationType.UPDATE, `posts/${post.id}`);
+                  }
+                }}
                 className={cn(
                   "flex items-center gap-1.5 transition-colors",
                   post.likes.includes(user.id) ? "text-pink-500" : "text-gray-400 hover:text-pink-400"
@@ -731,14 +835,17 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const uploadFile = async (file: File | Blob, path: string) => {
+    const fileRef = ref(storage, `${path}/${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
+    await uploadBytes(fileRef, file);
+    return await getDownloadURL(fileRef);
+  };
+
   const handleFileUpload = async (file: File) => {
     setUploading(true);
-    const formData = new FormData();
-    formData.append("file", file);
     try {
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
-      const data = await res.json();
-      setPendingMedia(data.url);
+      const url = await uploadFile(file, "chat/media");
+      setPendingMedia(url);
     } catch (err) {
       console.error("Upload failed:", err);
     } finally {
@@ -748,18 +855,15 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
 
   const handleVoiceUpload = async (blob: Blob) => {
     setUploading(true);
-    const formData = new FormData();
-    formData.append("file", blob, "voice.ogg");
     try {
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
-      const data = await res.json();
+      const url = await uploadFile(blob, "chat/voice");
       
-      // Automatically send the voice message after recording
-      socket.emit("send_message", {
+      await addDoc(collection(db, "messages"), {
         userId: user.id,
         userName: user.name,
         content: "",
-        voice: data.url,
+        voice: url,
+        timestamp: Date.now()
       });
       
     } catch (err) {
@@ -779,23 +883,29 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
       setAiLoading(true);
       
       const response = await generateAIResponse(userMsg);
-      socket.emit("send_message", {
+      await addDoc(collection(db, "messages"), {
         userId: "ai-assistant",
         userName: "Colony AI",
         content: response,
+        timestamp: Date.now()
       });
       setAiLoading(false);
     } else {
-      socket.emit("send_message", {
-        userId: user.id,
-        userName: user.name,
-        content,
-        image: pendingMedia,
-        voice: pendingVoice,
-      });
-      setContent("");
-      setPendingMedia(null);
-      setPendingVoice(null);
+      try {
+        await addDoc(collection(db, "messages"), {
+          userId: user.id,
+          userName: user.name,
+          content,
+          image: pendingMedia,
+          voice: pendingVoice,
+          timestamp: Date.now()
+        });
+        setContent("");
+        setPendingMedia(null);
+        setPendingVoice(null);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, "messages");
+      }
     }
   };
 
@@ -944,18 +1054,24 @@ const MapTab = ({ user }: { user: User }) => {
     if (isLiveEnabled) {
       if ("geolocation" in navigator) {
         watchId.current = window.navigator.geolocation.watchPosition(
-          (position) => {
+          async (position) => {
             const loc = {
               lat: position.coords.latitude,
               lng: position.coords.longitude
             };
             setCurrentLocation(loc);
-            socket.emit("update_location", {
-              userId: user.id,
-              userName: user.name,
-              avatar: user.avatar,
-              location: loc
-            });
+            try {
+              await setDoc(doc(db, "locations", user.id), {
+                userId: user.id,
+                userName: user.name,
+                userAvatar: user.avatar,
+                lat: loc.lat,
+                lng: loc.lng,
+                timestamp: Date.now()
+              });
+            } catch (error) {
+              console.error("Location update failed:", error);
+            }
           },
           (error) => console.error("Geolocation error:", error),
           { enableHighAccuracy: true }
@@ -976,17 +1092,19 @@ const MapTab = ({ user }: { user: User }) => {
   }, [isLiveEnabled, user]);
 
   useEffect(() => {
-    socket.on("user_location_updated", (data) => {
-      setOtherUsers(prev => ({
-        ...prev,
-        [data.userId]: data
-      }));
+    const unsubscribe = onSnapshot(collection(db, "locations"), (snapshot) => {
+      const users: { [key: string]: any } = {};
+      snapshot.docs.forEach(doc => {
+        const data = doc.data();
+        if (data.userId !== user.id && Date.now() - data.timestamp < 300000) { // Only show active users (last 5 mins)
+          users[data.userId] = data;
+        }
+      });
+      setOtherUsers(users);
     });
 
-    return () => {
-      socket.off("user_location_updated");
-    };
-  }, []);
+    return () => unsubscribe();
+  }, [user.id]);
 
   const locations = [
     { id: 1, name: "Colony Main Gate", lat: 12.9716, lng: 77.5946, type: "gate" },
@@ -1276,29 +1394,27 @@ const ProfileTab = ({ user, setUser, posts, onLogout, setWallpaper }: { user: Us
   const wallpaperInputRef = useRef<HTMLInputElement>(null);
 
   const handleSave = async () => {
-    const res = await fetch(`/api/profile/${user.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, bio, website })
-    });
-    if (res.ok) {
-      const updated = await res.json();
+    try {
+      const updated = { ...user, name, bio, website };
+      await setDoc(doc(db, "users", user.id), updated);
       setUser(updated);
-      localStorage.setItem("colony_user", JSON.stringify(updated));
       setEditing(false);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.id}`);
     }
   };
 
   const handleWallpaperChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const formData = new FormData();
-    formData.append("file", file);
-    const res = await fetch("/api/upload", { method: "POST", body: formData });
-    if (res.ok) {
-      const { url } = await res.json();
+    try {
+      const fileRef = ref(storage, `wallpapers/${user.id}_${Date.now()}`);
+      await uploadBytes(fileRef, file);
+      const url = await getDownloadURL(fileRef);
       setWallpaper(url);
       localStorage.setItem("colony_wallpaper", url);
+    } catch (error) {
+      console.error("Wallpaper upload failed:", error);
     }
   };
 
@@ -1318,14 +1434,15 @@ const ProfileTab = ({ user, setUser, posts, onLogout, setWallpaper }: { user: Us
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const formData = new FormData();
-    formData.append("avatar", file);
-    const res = await fetch(`/api/profile/${user.id}/avatar`, { method: "POST", body: formData });
-    if (res.ok) {
-      const { avatar } = await res.json();
-      const updated = { ...user, avatar };
+    try {
+      const fileRef = ref(storage, `avatars/${user.id}`);
+      await uploadBytes(fileRef, file);
+      const url = await getDownloadURL(fileRef);
+      const updated = { ...user, avatar: url };
+      await setDoc(doc(db, "users", user.id), updated);
       setUser(updated);
-      localStorage.setItem("colony_user", JSON.stringify(updated));
+    } catch (error) {
+      console.error("Avatar upload failed:", error);
     }
   };
 
@@ -1446,22 +1563,37 @@ const Auth = ({ onAuth }: { onAuth: any }) => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleGoogleLogin = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      // User doc creation is handled in ColonyConnectApp useEffect
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    const endpoint = isLogin ? "/api/auth/login" : "/api/auth/register";
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, password })
-    });
-    const data = await res.json();
-    if (res.ok) {
-      localStorage.setItem("colony_user", JSON.stringify(data));
-      onAuth(data);
-    } else {
-      setError(data.error);
+    setLoading(true);
+    try {
+      if (isLogin) {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        const result = await createUserWithEmailAndPassword(auth, email, password);
+        await updateProfile(result.user, { displayName: name });
+        // User doc creation is handled in ColonyConnectApp useEffect
+      }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -1474,38 +1606,55 @@ const Auth = ({ onAuth }: { onAuth: any }) => {
           <p className="text-gray-400">{isLogin ? "Welcome back, neighbor." : "Join your community today."}</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {!isLogin && (
+        <div className="space-y-4">
+          <button 
+            onClick={handleGoogleLogin}
+            disabled={loading}
+            className="w-full bg-white text-black py-4 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-gray-200 transition-all disabled:opacity-50"
+          >
+            <img src="https://www.google.com/favicon.ico" className="w-5 h-5" />
+            Continue with Google
+          </button>
+
+          <div className="flex items-center gap-4 py-2">
+            <div className="flex-1 h-px bg-white/10" />
+            <span className="text-[10px] uppercase tracking-widest text-gray-500 font-bold">OR</span>
+            <div className="flex-1 h-px bg-white/10" />
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {!isLogin && (
+              <input
+                type="text"
+                placeholder="Full Name"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-xl p-4 focus:outline-none focus:border-purple-500/50"
+                required
+              />
+            )}
             <input
-              type="text"
-              placeholder="Full Name"
-              value={name}
-              onChange={e => setName(e.target.value)}
+              type="email"
+              placeholder="Email Address"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
               className="w-full bg-white/5 border border-white/10 rounded-xl p-4 focus:outline-none focus:border-purple-500/50"
               required
             />
-          )}
-          <input
-            type="email"
-            placeholder="Email Address"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            className="w-full bg-white/5 border border-white/10 rounded-xl p-4 focus:outline-none focus:border-purple-500/50"
-            required
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            className="w-full bg-white/5 border border-white/10 rounded-xl p-4 focus:outline-none focus:border-purple-500/50"
-            required
-          />
-          {error && <p className="text-red-400 text-sm text-center">{error}</p>}
-          <button type="submit" className="w-full bg-purple-600 hover:bg-purple-500 py-4 rounded-xl font-bold transition-all shadow-lg shadow-purple-500/20">
-            {isLogin ? "Login" : "Register"}
-          </button>
-        </form>
+            <input
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-xl p-4 focus:outline-none focus:border-purple-500/50"
+              required
+            />
+            {error && <p className="text-red-400 text-[10px] font-bold uppercase tracking-widest text-center">{error}</p>}
+            <button type="submit" disabled={loading} className="w-full bg-purple-600 hover:bg-purple-500 py-4 rounded-xl font-bold transition-all shadow-lg shadow-purple-500/20 disabled:opacity-50">
+              {loading ? "Processing..." : (isLogin ? "Login" : "Register")}
+            </button>
+          </form>
+        </div>
 
         <p className="text-center text-sm text-gray-400">
           {isLogin ? "New here?" : "Already have an account?"}{" "}

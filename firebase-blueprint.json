@@ -1,0 +1,96 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A resident of the community.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "The unique ID of the user." },
+        "name": { "type": "string", "description": "The full name of the user." },
+        "email": { "type": "string", "description": "The email address of the user." },
+        "bio": { "type": "string", "description": "A short biography of the user." },
+        "avatar": { "type": "string", "description": "The URL of the user's avatar image." },
+        "website": { "type": "string", "description": "The user's personal website URL." }
+      },
+      "required": ["id", "name", "email"]
+    },
+    "Post": {
+      "title": "Post",
+      "description": "A community update or announcement.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "The unique ID of the post." },
+        "userId": { "type": "string", "description": "The ID of the user who created the post." },
+        "userName": { "type": "string", "description": "The name of the user who created the post." },
+        "userAvatar": { "type": "string", "description": "The avatar URL of the user who created the post." },
+        "content": { "type": "string", "description": "The text content of the post." },
+        "image": { "type": "string", "description": "The URL of an image attached to the post." },
+        "voice": { "type": "string", "description": "The URL of a voice recording attached to the post." },
+        "timestamp": { "type": "number", "description": "The creation timestamp of the post." },
+        "likes": { "type": "array", "items": { "type": "string" }, "description": "A list of user IDs who liked the post." },
+        "comments": { "type": "array", "items": { "$ref": "Comment" }, "description": "A list of comments on the post." }
+      },
+      "required": ["id", "userId", "userName", "content", "timestamp"]
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "A comment on a post.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "The unique ID of the comment." },
+        "userId": { "type": "string", "description": "The ID of the user who created the comment." },
+        "userName": { "type": "string", "description": "The name of the user who created the comment." },
+        "content": { "type": "string", "description": "The text content of the comment." },
+        "timestamp": { "type": "number", "description": "The creation timestamp of the comment." }
+      },
+      "required": ["id", "userId", "userName", "content", "timestamp"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A real-time chat message.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "The unique ID of the message." },
+        "userId": { "type": "string", "description": "The ID of the user who sent the message." },
+        "userName": { "type": "string", "description": "The name of the user who sent the message." },
+        "content": { "type": "string", "description": "The text content of the message." },
+        "image": { "type": "string", "description": "The URL of an image attached to the message." },
+        "voice": { "type": "string", "description": "The URL of a voice recording attached to the message." },
+        "timestamp": { "type": "number", "description": "The creation timestamp of the message." }
+      },
+      "required": ["id", "userId", "userName", "timestamp"]
+    },
+    "Location": {
+      "title": "Location",
+      "description": "Real-time user location.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The ID of the user." },
+        "userName": { "type": "string", "description": "The name of the user." },
+        "userAvatar": { "type": "string", "description": "The avatar URL of the user." },
+        "lat": { "type": "number", "description": "Latitude." },
+        "lng": { "type": "number", "description": "Longitude." },
+        "timestamp": { "type": "number", "description": "The timestamp of the location update." }
+      },
+      "required": ["userId", "userName", "lat", "lng", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles."
+    },
+    "/posts/{postId}": {
+      "schema": "Post",
+      "description": "Community feed posts."
+    },
+    "/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Real-time chat messages."
+    },
+    "/locations/{userId}": {
+      "schema": "Location",
+      "description": "Real-time user locations."
+    }
+  }
+}

@@ -1,0 +1,141 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - email: string (required)
+    //   - bio: string (optional)
+    //   - avatar: string (optional)
+    //   - website: string (optional)
+    //
+    // Collection: posts
+    // Document ID: postId
+    // Fields:
+    //   - id: string (required)
+    //   - userId: string (required)
+    //   - userName: string (required)
+    //   - userAvatar: string (optional)
+    //   - content: string (required)
+    //   - image: string (optional)
+    //   - voice: string (optional)
+    //   - timestamp: number (required)
+    //   - likes: array of strings (required)
+    //   - comments: array of objects (required)
+    //
+    // Collection: messages
+    // Document ID: messageId
+    // Fields:
+    //   - id: string (required)
+    //   - userId: string (required)
+    //   - userName: string (required)
+    //   - content: string (required)
+    //   - image: string (optional)
+    //   - voice: string (optional)
+    //   - timestamp: number (required)
+    //
+    // Collection: locations
+    // Document ID: userId
+    // Fields:
+    //   - userId: string (required)
+    //   - userName: string (required)
+    //   - userAvatar: string (optional)
+    //   - lat: number (required)
+    //   - lng: number (required)
+    //   - timestamp: number (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'name', 'email']) &&
+             data.id is string &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.email is string && data.email.size() > 0 && data.email.size() < 100;
+    }
+
+    function isValidPost(data) {
+      return data.keys().hasAll(['id', 'userId', 'userName', 'content', 'timestamp', 'likes', 'comments']) &&
+             data.id is string &&
+             data.userId is string &&
+             data.userName is string && data.userName.size() > 0 && data.userName.size() < 100 &&
+             data.content is string && data.content.size() > 0 && data.content.size() < 5000 &&
+             data.timestamp is number &&
+             data.likes is list &&
+             data.comments is list;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['id', 'userId', 'userName', 'timestamp']) &&
+             data.id is string &&
+             data.userId is string &&
+             data.userName is string && data.userName.size() > 0 && data.userName.size() < 100 &&
+             data.timestamp is number &&
+             (data.content is string || data.image is string || data.voice is string);
+    }
+
+    function isValidLocation(data) {
+      return data.keys().hasAll(['userId', 'userName', 'lat', 'lng', 'timestamp']) &&
+             data.userId is string &&
+             data.userName is string &&
+             data.lat is number &&
+             data.lng is number &&
+             data.timestamp is number;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+    }
+
+    match /posts/{postId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidPost(request.resource.data) && request.resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && (
+        (isDocOwner() && isValidPost(request.resource.data)) ||
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'comments']) && isValidPost(request.resource.data))
+      );
+      allow delete: if isDocOwner();
+    }
+
+    match /messages/{messageId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidMessage(request.resource.data) && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /locations/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId) && isValidLocation(request.resource.data);
+    }
+  }
+}
