@@ -42,31 +42,9 @@ import { GoogleMap, useJsApiLoader, Marker } from "@react-google-maps/api";
 import { formatDistanceToNow } from "date-fns";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { 
-  collection, 
-  onSnapshot, 
-  query, 
-  orderBy, 
-  doc, 
-  updateDoc, 
-  deleteDoc, 
-  setDoc, 
-  getDoc,
-  serverTimestamp,
-  limit,
-  where
-} from "firebase/firestore";
-import { 
-  signInWithPopup, 
-  signOut, 
-  onAuthStateChanged, 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword,
-  updateProfile
-} from "firebase/auth";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { db, auth, googleProvider, storage } from "./firebase";
-import { handleFirestoreError, OperationType } from "./lib/firebase-utils";
+import { db } from "./lib/local-db";
+import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google';
+import { jwtDecode } from "jwt-decode";
 import { User, Post, Message, Comment } from "./types";
 import { summarizeFeed, suggestPost, generateAIResponse } from "./services/aiService";
 
@@ -111,13 +89,11 @@ const CommentSection = ({ post, user }: { post: Post, user: User }) => {
     };
 
     try {
-      const postRef = doc(db, "posts", post.id);
-      await updateDoc(postRef, {
-        comments: [...post.comments, newComment]
-      });
+      const updatedPost = { ...post, comments: [...post.comments, newComment] };
+      await db.updatePost(updatedPost);
       setComment("");
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `posts/${post.id}`);
+      console.error("Error adding comment:", error);
     }
   };
 
@@ -168,7 +144,9 @@ const CommentSection = ({ post, user }: { post: Post, user: User }) => {
 export default function ColonyConnect() {
   return (
     <ErrorBoundary>
-      <ColonyConnectApp />
+      <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID || "1234567890-mock.apps.googleusercontent.com"}>
+        <ColonyConnectApp />
+      </GoogleOAuthProvider>
     </ErrorBoundary>
   );
 }
@@ -182,54 +160,43 @@ function ColonyConnectApp() {
   const [wallpaper, setWallpaper] = useState<string | null>(null);
 
   useEffect(() => {
-    // Auth state listener
-    const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
-        if (userDoc.exists()) {
-          setUser(userDoc.data() as User);
+    // Check local storage for existing session
+    const checkAuth = async () => {
+      const savedUser = localStorage.getItem("colony_user");
+      if (savedUser) {
+        const parsedUser = JSON.parse(savedUser);
+        const userDoc = await db.getUser(parsedUser.id);
+        if (userDoc) {
+          setUser(userDoc);
         } else {
-          const newUser: User = {
-            id: firebaseUser.uid,
-            name: firebaseUser.displayName || "Resident",
-            email: firebaseUser.email || "",
-            avatar: firebaseUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`
-          };
-          await setDoc(doc(db, "users", firebaseUser.uid), newUser);
-          setUser(newUser);
+          await db.saveUser(parsedUser);
+          setUser(parsedUser);
         }
-      } else {
-        setUser(null);
       }
       setLoading(false);
-    });
+    };
+    checkAuth();
 
     // Wallpaper from local storage
     const savedWallpaper = localStorage.getItem("colony_wallpaper");
     if (savedWallpaper) setWallpaper(savedWallpaper);
 
-    // Firestore listeners
-    const postsQuery = query(collection(db, "posts"), orderBy("timestamp", "desc"), limit(50));
-    const unsubscribePosts = onSnapshot(postsQuery, (snapshot) => {
-      const postsData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Post));
-      setPosts(postsData);
-    }, (error) => handleFirestoreError(error, OperationType.LIST, "posts"));
-
-    const messagesQuery = query(collection(db, "messages"), orderBy("timestamp", "asc"), limit(100));
-    const unsubscribeMessages = onSnapshot(messagesQuery, (snapshot) => {
-      const messagesData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Message));
-      setMessages(messagesData);
-    }, (error) => handleFirestoreError(error, OperationType.LIST, "messages"));
-
-    return () => {
-      unsubscribeAuth();
-      unsubscribePosts();
-      unsubscribeMessages();
+    // Initial data load
+    const loadData = async () => {
+      const loadedPosts = await db.getPosts();
+      setPosts(loadedPosts);
+      const loadedMessages = await db.getMessages();
+      setMessages(loadedMessages);
     };
+    loadData();
+
+    // Simple polling for "real-time" feel since we removed Firebase
+    const interval = setInterval(loadData, 5000);
+    return () => clearInterval(interval);
   }, []);
 
-  const handleLogout = async () => {
-    await signOut(auth);
+  const handleLogout = () => {
+    localStorage.removeItem("colony_user");
     setUser(null);
   };
 
@@ -389,9 +356,7 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
   };
 
   const uploadFile = async (file: File | Blob, path: string) => {
-    const fileRef = ref(storage, `${path}/${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
-    await uploadBytes(fileRef, file);
-    return await getDownloadURL(fileRef);
+    return await db.fileToBase64(file);
   };
 
   const handleAISuggest = async () => {
@@ -454,9 +419,8 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
       if (currentImage) imageUrl = await uploadFile(currentImage, "posts/images");
       if (currentVoice) voiceUrl = await uploadFile(currentVoice, "posts/voice");
 
-      const postRef = doc(collection(db, "posts"));
-      await setDoc(postRef, {
-        id: postRef.id,
+      const newPost: Post = {
+        id: tempId,
         userId: user.id,
         userName: user.name,
         userAvatar: user.avatar || "",
@@ -466,10 +430,11 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
         timestamp: Date.now(),
         likes: [],
         comments: []
-      });
+      };
+      await db.savePost(newPost);
+      setPosts(await db.getPosts());
     } catch (err) {
       console.error("Post error:", err);
-      handleFirestoreError(err, OperationType.CREATE, "posts");
     } finally {
       setPosting(false);
       setOptimisticPosts(prev => prev.filter(p => p.id !== tempId));
@@ -478,9 +443,10 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
 
   const handleDelete = async (id: string) => {
     try {
-      await deleteDoc(doc(db, "posts", id));
+      await db.deletePost(id);
+      setPosts(await db.getPosts());
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `posts/${id}`);
+      console.error("Delete error:", error);
     }
   };
 
@@ -634,9 +600,11 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
                     ? post.likes.filter(id => id !== user.id)
                     : [...post.likes, user.id];
                   try {
-                    await updateDoc(doc(db, "posts", post.id), { likes: newLikes });
+                    const updatedPost = { ...post, likes: newLikes };
+                    await db.updatePost(updatedPost);
+                    setPosts(await db.getPosts());
                   } catch (error) {
-                    handleFirestoreError(error, OperationType.UPDATE, `posts/${post.id}`);
+                    console.error("Like error:", error);
                   }
                 }}
                 className={cn(
@@ -693,9 +661,7 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
   }, [messages]);
 
   const uploadFile = async (file: File | Blob, path: string) => {
-    const fileRef = ref(storage, `${path}/${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
-    await uploadBytes(fileRef, file);
-    return await getDownloadURL(fileRef);
+    return await db.fileToBase64(file);
   };
 
   const handleFileUpload = (file: File) => {
@@ -718,15 +684,15 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
       setAiLoading(true);
       
       const response = await generateAIResponse(userMsg);
-      const msgRef = doc(collection(db, "messages"));
-      await setDoc(msgRef, {
-        id: msgRef.id,
+      const newMsg: Message = {
+        id: "ai_" + Date.now(),
         userId: "ai-assistant",
         userName: "Colony AI",
         content: response,
         timestamp: Date.now(),
         triggeredBy: user.id
-      });
+      };
+      await db.saveMessage(newMsg);
       setAiLoading(false);
     } else {
       const currentContent = content;
@@ -764,19 +730,18 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
           voiceUrl = await uploadFile(currentVoice, "chat/voice");
         }
 
-        const msgRef = doc(collection(db, "messages"));
-        await setDoc(msgRef, {
-          id: msgRef.id,
+        const newMsg: Message = {
+          id: tempId,
           userId: user.id,
           userName: user.name,
           content: currentContent,
           image: mediaUrl,
           voice: voiceUrl,
           timestamp: Date.now()
-        });
+        };
+        await db.saveMessage(newMsg);
       } catch (error) {
         console.error("Send error:", error);
-        handleFirestoreError(error, OperationType.CREATE, "messages");
       } finally {
         setOptimisticMessages(prev => prev.filter(m => m.id !== tempId));
       }
@@ -785,9 +750,9 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
 
   const handleDeleteMessage = async (id: string) => {
     try {
-      await deleteDoc(doc(db, "messages", id));
+      await db.deleteMessage(id);
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `messages/${id}`);
+      console.error("Delete error:", error);
     }
   };
 
@@ -1008,14 +973,13 @@ const MapTab = ({ user }: { user: User }) => {
             };
             setCurrentLocation(loc);
             try {
-              await setDoc(doc(db, "locations", user.id), {
-                userId: user.id,
-                userName: user.name,
-                userAvatar: user.avatar,
+              await db.saveLocation(user.id, {
                 lat: loc.lat,
                 lng: loc.lng,
-                timestamp: Date.now()
-              });
+                timestamp: Date.now(),
+                userName: user.name,
+                userAvatar: user.avatar
+              } as any);
             } catch (error) {
               console.error("Location update failed:", error);
             }
@@ -1039,18 +1003,20 @@ const MapTab = ({ user }: { user: User }) => {
   }, [isLiveEnabled, user]);
 
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, "locations"), (snapshot) => {
+    const loadLocations = async () => {
+      const allLocations = await db.getLocations();
       const users: { [key: string]: any } = {};
-      snapshot.docs.forEach(doc => {
-        const data = doc.data();
-        if (data.userId !== user.id && Date.now() - data.timestamp < 300000) { // Only show active users (last 5 mins)
-          users[data.userId] = data;
+      Object.entries(allLocations).forEach(([userId, data]: [string, any]) => {
+        if (userId !== user.id && Date.now() - data.timestamp < 300000) { // Only show active users (last 5 mins)
+          users[userId] = data;
         }
       });
       setOtherUsers(users);
-    });
+    };
 
-    return () => unsubscribe();
+    loadLocations();
+    const interval = setInterval(loadLocations, 10000); // Poll every 10s
+    return () => clearInterval(interval);
   }, [user.id]);
 
   const locations = [
@@ -1343,11 +1309,11 @@ const ProfileTab = ({ user, setUser, posts, onLogout, setWallpaper }: { user: Us
   const handleSave = async () => {
     try {
       const updated = { ...user, name, bio, website };
-      await setDoc(doc(db, "users", user.id), updated);
+      await db.saveUser(updated);
       setUser(updated);
       setEditing(false);
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${user.id}`);
+      console.error("Profile update failed:", error);
     }
   };
 
@@ -1355,9 +1321,7 @@ const ProfileTab = ({ user, setUser, posts, onLogout, setWallpaper }: { user: Us
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const fileRef = ref(storage, `wallpapers/${user.id}_${Date.now()}`);
-      await uploadBytes(fileRef, file);
-      const url = await getDownloadURL(fileRef);
+      const url = await db.fileToBase64(file);
       setWallpaper(url);
       localStorage.setItem("colony_wallpaper", url);
     } catch (error) {
@@ -1382,11 +1346,9 @@ const ProfileTab = ({ user, setUser, posts, onLogout, setWallpaper }: { user: Us
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const fileRef = ref(storage, `avatars/${user.id}`);
-      await uploadBytes(fileRef, file);
-      const url = await getDownloadURL(fileRef);
+      const url = await db.fileToBase64(file);
       const updated = { ...user, avatar: url };
-      await setDoc(doc(db, "users", user.id), updated);
+      await db.saveUser(updated);
       setUser(updated);
     } catch (error) {
       console.error("Avatar upload failed:", error);
@@ -1512,17 +1474,36 @@ const Auth = ({ onAuth }: { onAuth: any }) => {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const handleGoogleLogin = async () => {
+  const handleGoogleSuccess = async (credentialResponse: any) => {
     setLoading(true);
     setError("");
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      // User doc creation is handled in ColonyConnectApp useEffect
+      const decoded: any = jwtDecode(credentialResponse.credential);
+      const user: User = {
+        id: decoded.sub,
+        name: decoded.name,
+        email: decoded.email,
+        avatar: decoded.picture
+      };
+      
+      // Save to local db
+      await db.saveUser(user);
+      
+      // Save to local storage for session
+      localStorage.setItem("colony_user", JSON.stringify(user));
+      
+      // Trigger app re-render
+      window.location.reload();
     } catch (err: any) {
-      setError(err.message);
+      setError("Google login failed.");
+      console.error(err);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleGoogleError = () => {
+    setError("Google Login Failed");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1530,13 +1511,26 @@ const Auth = ({ onAuth }: { onAuth: any }) => {
     setError("");
     setLoading(true);
     try {
+      // Simulate email/password login with local db
+      const id = email.replace(/[^a-zA-Z0-9]/g, '');
+      let user: User;
+      
       if (isLogin) {
-        await signInWithEmailAndPassword(auth, email, password);
+        const existingUser = await db.getUser(id);
+        if (!existingUser) throw new Error("User not found");
+        user = existingUser;
       } else {
-        const result = await createUserWithEmailAndPassword(auth, email, password);
-        await updateProfile(result.user, { displayName: name });
-        // User doc creation is handled in ColonyConnectApp useEffect
+        user = {
+          id,
+          name: name || email.split('@')[0],
+          email,
+          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${id}`
+        };
+        await db.saveUser(user);
       }
+      
+      localStorage.setItem("colony_user", JSON.stringify(user));
+      window.location.reload();
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -1554,14 +1548,15 @@ const Auth = ({ onAuth }: { onAuth: any }) => {
         </div>
 
         <div className="space-y-4">
-          <button 
-            onClick={handleGoogleLogin}
-            disabled={loading}
-            className="w-full bg-white text-black py-4 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-gray-200 transition-all disabled:opacity-50"
-          >
-            <img src="https://www.google.com/favicon.ico" className="w-5 h-5" />
-            Continue with Google
-          </button>
+          <div className="flex justify-center w-full">
+            <GoogleLogin
+              onSuccess={handleGoogleSuccess}
+              onError={handleGoogleError}
+              useOneTap
+              theme="filled_black"
+              shape="pill"
+            />
+          </div>
 
           <div className="flex items-center gap-4 py-2">
             <div className="flex-1 h-px bg-white/10" />

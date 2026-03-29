@@ -15,7 +15,7 @@ async function startServer() {
 
   // Health check
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", firebase: "enabled" });
+    res.json({ status: "ok" });
   });
 
   // Vite middleware for development
