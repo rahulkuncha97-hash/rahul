@@ -1,0 +1,9 @@
+{
+  "name": "ColonyConnect",
+  "description": "A premium smart community management platform for residents to post updates, chat in real-time, and access emergency services.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}

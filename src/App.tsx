@@ -1,0 +1,1519 @@
+import React, { useState, useEffect, useRef } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import { 
+  Home, 
+  Rss, 
+  MessageSquare, 
+  Map as MapIcon, 
+  User as UserIcon, 
+  LogOut, 
+  Plus, 
+  Heart, 
+  MessageCircle, 
+  Trash2, 
+  Send, 
+  Image as ImageIcon, 
+  Video,
+  Mic, 
+  Phone, 
+  ShieldAlert, 
+  Flame, 
+  Ambulance, 
+  ExternalLink, 
+  QrCode,
+  Globe,
+  Edit2,
+  Camera,
+  Check,
+  X,
+  Sparkles,
+  Bot,
+  Wand2,
+  Info,
+  Play,
+  Pause,
+  Square
+} from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
+import { formatDistanceToNow } from "date-fns";
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+import { GoogleMap, useJsApiLoader, Marker } from "@react-google-maps/api";
+import socket from "./lib/socket";
+import { User, Post, Message, Comment } from "./types";
+import { summarizeFeed, suggestPost, generateAIResponse } from "./services/aiService";
+
+// --- Utils ---
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+// --- Components ---
+
+const GlassCard = ({ children, className, tilt = false, ...props }: { children: React.ReactNode, className?: string, tilt?: boolean, [key: string]: any }) => {
+  const [rotate, setRotate] = useState({ x: 0, y: 0 });
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!tilt) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+    const rotateX = (y - centerY) / 10;
+    const rotateY = (centerX - x) / 10;
+    setRotate({ x: rotateX, y: rotateY });
+  };
+  const handleMouseLeave = () => setRotate({ x: 0, y: 0 });
+
+  return (
+    <motion.div
+      {...props}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+      animate={{ rotateX: rotate.x, rotateY: rotate.y }}
+      transition={{ type: "spring", stiffness: 300, damping: 20 }}
+      className={cn(
+        "bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl overflow-hidden shadow-xl",
+        className
+      )}
+      style={{ perspective: 1000 }}
+    >
+      {children}
+    </motion.div>
+  );
+};
+
+const FloatingOrbs = () => (
+  <div className="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
+    <motion.div
+      animate={{
+        x: [0, 100, -50, 0],
+        y: [0, -100, 50, 0],
+        scale: [1, 1.2, 0.8, 1],
+      }}
+      transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
+      className="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600/30 rounded-full blur-[100px]"
+    />
+    <motion.div
+      animate={{
+        x: [0, -150, 100, 0],
+        y: [0, 150, -100, 0],
+        scale: [1, 0.9, 1.3, 1],
+      }}
+      transition={{ duration: 25, repeat: Infinity, ease: "linear" }}
+      className="absolute bottom-1/4 right-1/4 w-[500px] h-[500px] bg-blue-600/20 rounded-full blur-[120px]"
+    />
+    <motion.div
+      animate={{
+        x: [0, 200, -100, 0],
+        y: [0, 100, -200, 0],
+        scale: [1, 1.1, 0.9, 1],
+      }}
+      transition={{ duration: 30, repeat: Infinity, ease: "linear" }}
+      className="absolute top-1/2 left-1/2 w-80 h-80 bg-pink-600/20 rounded-full blur-[100px]"
+    />
+  </div>
+);
+
+const VoicePlayer = ({ url }: { url: string }) => {
+  const [playing, setPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  const toggle = () => {
+    if (playing) {
+      audioRef.current?.pause();
+    } else {
+      audioRef.current?.play();
+    }
+    setPlaying(!playing);
+  };
+
+  return (
+    <div className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-full px-4 py-2 w-fit">
+      <audio ref={audioRef} src={url} onEnded={() => setPlaying(false)} />
+      <button onClick={toggle} className="text-purple-400 hover:text-purple-300 transition-colors">
+        {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+      </button>
+      <div className="w-24 h-1 bg-white/10 rounded-full overflow-hidden">
+        <motion.div 
+          animate={playing ? { x: ["-100%", "100%"] } : { x: "-100%" }}
+          transition={playing ? { duration: 1.5, repeat: Infinity, ease: "linear" } : {}}
+          className="w-full h-full bg-purple-500"
+        />
+      </div>
+    </div>
+  );
+};
+
+const VoiceRecorder = ({ onRecordingComplete, label }: { onRecordingComplete: (blob: Blob) => void, label?: string }) => {
+  const [recording, setRecording] = useState(false);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const [duration, setDuration] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const timerRef = useRef<any>(null);
+
+  const getSupportedMimeType = () => {
+    const types = ["audio/webm", "audio/ogg", "audio/mp4", "audio/wav"];
+    for (const type of types) {
+      if (MediaRecorder.isTypeSupported(type)) return type;
+    }
+    return "";
+  };
+
+  const startRecording = async () => {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = getSupportedMimeType();
+      const recorder = new MediaRecorder(stream, { mimeType });
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+      
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: mimeType || "audio/webm" });
+        onRecordingComplete(blob);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      recorder.start();
+      setMediaRecorder(recorder);
+      setRecording(true);
+      setDuration(0);
+      timerRef.current = setInterval(() => setDuration(prev => prev + 1), 1000);
+    } catch (err: any) {
+      console.error("Error accessing microphone:", err);
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setError("Microphone access denied. Please check browser settings.");
+      } else {
+        setError("Could not access microphone.");
+      }
+      setTimeout(() => setError(null), 5000);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+    }
+    setRecording(false);
+    if (timerRef.current) clearInterval(timerRef.current);
+  };
+
+  return (
+    <div className="flex items-center gap-3 relative">
+      {recording ? (
+        <div className="flex items-center gap-3 bg-red-500/20 border border-red-500/40 rounded-full px-4 py-2.5 shadow-[0_0_15px_rgba(239,68,68,0.3)]">
+          <motion.div 
+            animate={{ scale: [1, 1.2, 1] }}
+            transition={{ duration: 1, repeat: Infinity }}
+            className="w-2.5 h-2.5 bg-red-500 rounded-full" 
+          />
+          <span className="text-xs font-mono font-bold text-red-400">{Math.floor(duration / 60)}:{(duration % 60).toString().padStart(2, '0')}</span>
+          <button 
+            type="button"
+            onClick={(e) => { e.stopPropagation(); stopRecording(); }} 
+            className="p-1.5 bg-red-500 rounded-full text-white hover:bg-red-600 transition-colors"
+          >
+            <Square size={14} fill="currentColor" />
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-col items-start gap-1">
+          <button 
+            type="button"
+            onClick={(e) => { e.stopPropagation(); startRecording(); }} 
+            className={cn(
+              "flex items-center gap-2 px-3 py-2.5 bg-white/5 hover:bg-white/10 rounded-full text-gray-400 hover:text-purple-400 transition-all border border-white/5",
+              label && "pr-4"
+            )}
+          >
+            <Mic size={20} />
+            {label && <span className="text-xs font-bold uppercase tracking-widest">{label}</span>}
+          </button>
+          {error && (
+            <motion.span 
+              initial={{ opacity: 0, y: 5 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="text-[8px] text-red-500 font-bold absolute -bottom-4 left-0 whitespace-nowrap uppercase tracking-widest"
+            >
+              {error}
+            </motion.span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const mapStyles = [
+  { elementType: "geometry", stylers: [{ color: "#242f3e" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#242f3e" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#746855" }] },
+  { featureType: "administrative.locality", elementType: "labels.text.fill", stylers: [{ color: "#d59563" }] },
+  { featureType: "poi", elementType: "labels.text.fill", stylers: [{ color: "#d59563" }] },
+  { featureType: "road", elementType: "geometry", stylers: [{ color: "#38414e" }] },
+  { featureType: "road", elementType: "geometry.stroke", stylers: [{ color: "#212a37" }] },
+  { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#9ca5b3" }] },
+  { featureType: "water", elementType: "geometry", stylers: [{ color: "#17263c" }] },
+];
+
+const CommentSection = ({ post, user }: { post: Post, user: User }) => {
+  const [comment, setComment] = useState("");
+  const [showComments, setShowComments] = useState(false);
+
+  const handleAddComment = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!comment.trim()) return;
+    socket.emit("add_comment", {
+      postId: post.id,
+      userId: user.id,
+      userName: user.name,
+      content: comment
+    });
+    setComment("");
+  };
+
+  return (
+    <div className="px-3 pb-3 space-y-3">
+      <button 
+        onClick={() => setShowComments(!showComments)}
+        className="text-[10px] font-bold text-gray-500 uppercase tracking-widest hover:text-purple-400 transition-colors"
+      >
+        {showComments ? "Hide Comments" : `View ${post.comments.length} Comments`}
+      </button>
+
+      <AnimatePresence>
+        {showComments && (
+          <motion.div 
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="space-y-2 overflow-hidden"
+          >
+            {post.comments.map(c => (
+              <div key={c.id} className="bg-white/5 p-2 rounded-lg border border-white/5">
+                <p className="text-[10px] font-bold text-purple-400">{c.userName}</p>
+                <p className="text-xs text-gray-300">{c.content}</p>
+              </div>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <form onSubmit={handleAddComment} className="flex gap-2">
+        <input 
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          placeholder="Add a comment..."
+          className="flex-1 bg-white/5 border border-white/10 rounded-full px-3 py-1.5 text-xs focus:outline-none focus:border-purple-500/50"
+        />
+        <button type="submit" className="text-purple-500 hover:text-purple-400">
+          <Send size={16} />
+        </button>
+      </form>
+    </div>
+  );
+};
+
+// --- Main App ---
+
+export default function ColonyConnect() {
+  const [user, setUser] = useState<User | null>(null);
+  const [activeTab, setActiveTab] = useState("home");
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [wallpaper, setWallpaper] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Check local storage for session and wallpaper
+    const savedUser = localStorage.getItem("colony_user");
+    const savedWallpaper = localStorage.getItem("colony_wallpaper");
+    if (savedUser) {
+      setUser(JSON.parse(savedUser));
+    }
+    if (savedWallpaper) {
+      setWallpaper(savedWallpaper);
+    }
+    setLoading(false);
+
+    // Fetch initial data
+    fetch("/api/posts").then(res => res.json()).then(setPosts);
+    fetch("/api/chat").then(res => res.json()).then(setMessages);
+
+    // Socket listeners
+    socket.on("new_post", (post: Post) => {
+      setPosts(prev => [post, ...prev]);
+    });
+
+    socket.on("post_deleted", (id: string) => {
+      setPosts(prev => prev.filter(p => p.id !== id));
+    });
+
+    socket.on("receive_message", (msg: Message) => {
+      setMessages(prev => [...prev, msg]);
+    });
+
+    socket.on("comment_added", ({ postId, comment }) => {
+      setPosts(prev => prev.map(p => p.id === postId ? { ...p, comments: [...p.comments, comment] } : p));
+    });
+
+    socket.on("post_liked", ({ postId, likes }) => {
+      setPosts(prev => prev.map(p => p.id === postId ? { ...p, likes } : p));
+    });
+
+    return () => {
+      socket.off("new_post");
+      socket.off("post_deleted");
+      socket.off("receive_message");
+      socket.off("comment_added");
+      socket.off("post_liked");
+    };
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem("colony_user");
+    setUser(null);
+  };
+
+  if (loading) return <div className="h-screen flex items-center justify-center bg-black text-white">Loading...</div>;
+
+  if (!user) return <Auth onAuth={setUser} />;
+
+  return (
+    <div 
+      className="min-h-screen bg-black text-white font-sans selection:bg-purple-500/30 bg-cover bg-center bg-no-repeat transition-all duration-700"
+      style={wallpaper ? { backgroundImage: `url(${wallpaper})` } : {}}
+    >
+      <div className={cn("min-h-screen", wallpaper && "bg-black/40 backdrop-blur-[2px]")}>
+        <FloatingOrbs />
+        
+        <main className="pb-24 pt-6 px-4 max-w-2xl mx-auto">
+          <AnimatePresence mode="wait">
+            {activeTab === "home" && <HomeTab user={user} posts={posts} messages={messages} />}
+            {activeTab === "feed" && <FeedTab user={user} posts={posts} setPosts={setPosts} />}
+            {activeTab === "chat" && <ChatTab user={user} messages={messages} />}
+            {activeTab === "map" && <MapTab user={user} />}
+            {activeTab === "profile" && <ProfileTab user={user} setUser={setUser} posts={posts} onLogout={handleLogout} setWallpaper={setWallpaper} />}
+          </AnimatePresence>
+        </main>
+
+        <nav className="fixed bottom-0 left-0 right-0 bg-black/80 backdrop-blur-xl border-t border-white/10 px-6 py-4 flex justify-between items-center z-50">
+          {[
+            { id: "home", icon: Home, label: "Home" },
+            { id: "feed", icon: Rss, label: "Feed" },
+            { id: "chat", icon: MessageSquare, label: "Chat" },
+            { id: "map", icon: MapIcon, label: "Map" },
+            { id: "profile", icon: UserIcon, label: "Profile" },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                "flex flex-col items-center gap-1 transition-all duration-300 relative",
+                activeTab === tab.id ? "text-purple-400 scale-110" : "text-gray-500 hover:text-gray-300"
+              )}
+            >
+              <tab.icon size={24} />
+              <span className="text-[10px] font-medium uppercase tracking-widest">{tab.label}</span>
+              {activeTab === tab.id && (
+                <motion.div layoutId="nav-indicator" className="absolute -top-4 w-1 h-1 bg-purple-400 rounded-full shadow-[0_0_10px_#a855f7]" />
+              )}
+            </button>
+          ))}
+        </nav>
+      </div>
+    </div>
+  );
+}
+
+// --- Tab Components ---
+
+const HomeTab = ({ user, posts, messages }: { user: User, posts: Post[], messages: Message[] }) => {
+  const [summary, setSummary] = useState<string | null>(null);
+  const [summarizing, setSummarizing] = useState(false);
+
+  const handleSummarize = async () => {
+    setSummarizing(true);
+    const text = await summarizeFeed(posts);
+    setSummary(text || "No summary available.");
+    setSummarizing(false);
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      className="space-y-6"
+    >
+      <header className="flex items-center justify-between">
+        <div className="space-y-1">
+          <h1 className="text-3xl font-bold tracking-tighter">Hi, {user.name.split(' ')[0]}</h1>
+          <p className="text-gray-500 text-sm">Your community is active today.</p>
+        </div>
+        <div className="w-12 h-12 rounded-full bg-purple-500/10 border border-purple-500/20 flex items-center justify-center">
+          <Sparkles size={20} className="text-purple-400" />
+        </div>
+      </header>
+
+      <div className="grid grid-cols-2 gap-3">
+        <GlassCard className="p-4 space-y-1">
+          <p className="text-[10px] uppercase tracking-widest text-gray-500 font-bold">Posts</p>
+          <p className="text-2xl font-mono font-bold">{posts.length}</p>
+        </GlassCard>
+        <GlassCard className="p-4 space-y-1">
+          <p className="text-[10px] uppercase tracking-widest text-gray-500 font-bold">Messages</p>
+          <p className="text-2xl font-mono font-bold">{messages.length}</p>
+        </GlassCard>
+      </div>
+
+      <GlassCard className="p-5 space-y-3 border-purple-500/20 bg-purple-500/5">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold flex items-center gap-2">
+            <Bot size={16} className="text-purple-400" /> AI Community Summary
+          </h3>
+          <button 
+            onClick={handleSummarize}
+            disabled={summarizing}
+            className="text-[10px] uppercase tracking-widest font-bold text-purple-400 hover:text-purple-300 disabled:opacity-50"
+          >
+            {summarizing ? "Analyzing..." : "Refresh"}
+          </button>
+        </div>
+        <p className="text-xs text-gray-400 leading-relaxed italic">
+          {summary || "Click refresh to get an AI-powered summary of the latest community updates."}
+        </p>
+      </GlassCard>
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-bold uppercase tracking-widest text-gray-500 flex items-center gap-2">
+          <Rss size={14} /> Recent Activity
+        </h2>
+        <div className="space-y-3">
+          {posts.slice(0, 3).map(post => (
+            <GlassCard key={post.id} className="p-3 flex gap-3 items-center">
+              <img src={post.userAvatar} className="w-8 h-8 rounded-full border border-white/10" referrerPolicy="no-referrer" />
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-sm truncate">{post.userName}</p>
+                <p className="text-xs text-gray-400 truncate">{post.content}</p>
+              </div>
+              <p className="text-[9px] text-gray-500 whitespace-nowrap">{formatDistanceToNow(post.timestamp)}</p>
+            </GlassCard>
+          ))}
+        </div>
+      </section>
+    </motion.div>
+  );
+};
+
+const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPosts: any }) => {
+  const [showCreate, setShowCreate] = useState(false);
+  const [content, setContent] = useState("");
+  const [image, setImage] = useState<File | null>(null);
+  const [voice, setVoice] = useState<Blob | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [voicePreview, setVoicePreview] = useState<string | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
+
+  const handleAISuggest = async () => {
+    if (!content.trim()) {
+      alert("Please type a topic first (e.g., 'community garden' or 'lost keys')");
+      return;
+    }
+    setSuggesting(true);
+    const suggestion = await suggestPost(content);
+    if (suggestion) setContent(suggestion);
+    setSuggesting(false);
+  };
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setImage(file);
+      setPreview(URL.createObjectURL(file));
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const formData = new FormData();
+    formData.append("userId", user.id);
+    formData.append("userName", user.name);
+    formData.append("userAvatar", user.avatar || "");
+    formData.append("content", content);
+    if (image) formData.append("image", image);
+    if (voice) formData.append("voice", voice, "voice.ogg");
+
+    try {
+      const res = await fetch("/api/posts", { method: "POST", body: formData });
+      if (res.ok) {
+        setContent("");
+        setImage(null);
+        setVoice(null);
+        setPreview(null);
+        setVoicePreview(null);
+        setShowCreate(false);
+      } else {
+        const err = await res.json();
+        alert(`Failed to post: ${err.error || "Unknown error"}`);
+      }
+    } catch (err) {
+      console.error("Post error:", err);
+      alert("Failed to connect to server. Please try again.");
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    await fetch(`/api/posts/${id}`, { method: "DELETE" });
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="space-y-5"
+    >
+      <div className="flex justify-between items-center">
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold tracking-tighter">Community Feed</h1>
+          <div className="px-2 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-widest border bg-green-500/20 border-green-500/40 text-green-400 flex items-center gap-1">
+            <div className="w-1 h-1 bg-green-400 rounded-full animate-pulse" />
+            Live
+          </div>
+        </div>
+        <button 
+          onClick={() => setShowCreate(true)}
+          className="bg-purple-600 hover:bg-purple-500 p-2.5 rounded-full transition-colors shadow-lg shadow-purple-500/20"
+        >
+          <Plus size={20} />
+        </button>
+      </div>
+
+      <AnimatePresence>
+        {showCreate && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          >
+            <GlassCard className="w-full max-w-md p-5 space-y-4">
+              <div className="flex justify-between items-center">
+                <h2 className="text-lg font-bold">New Post</h2>
+                <button onClick={() => setShowCreate(false)} className="text-gray-400 hover:text-white"><X size={20}/></button>
+              </div>
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="relative">
+                  <textarea
+                    value={content}
+                    onChange={(e) => setContent(e.target.value)}
+                    placeholder="What's happening in the colony?"
+                    className="w-full bg-white/5 border border-white/10 rounded-xl p-4 focus:outline-none focus:border-purple-500/50 min-h-[100px] resize-none text-sm"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAISuggest}
+                    disabled={suggesting}
+                    className="absolute bottom-3 right-3 text-purple-400 hover:text-purple-300 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest bg-purple-500/10 px-2 py-1 rounded-md border border-purple-500/20"
+                  >
+                    <Wand2 size={12} /> {suggesting ? "Writing..." : "AI Help"}
+                  </button>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="flex-1 flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-2.5 cursor-pointer transition-colors">
+                    <ImageIcon size={18} className="text-blue-400" />
+                    <span className="text-xs font-medium text-gray-400">Media</span>
+                    <input type="file" className="hidden" accept="image/*,video/*" onChange={handleImageChange} />
+                  </label>
+                  <VoiceRecorder label="Voice" onRecordingComplete={(blob) => {
+                    setVoice(blob);
+                    setVoicePreview(URL.createObjectURL(blob));
+                  }} />
+                  <button type="submit" className="bg-purple-600 hover:bg-purple-500 px-6 py-2.5 rounded-xl text-sm font-bold transition-colors">Post</button>
+                </div>
+                {preview && (
+                  <div className="relative rounded-xl overflow-hidden aspect-video border border-white/10">
+                    <img src={preview} className="w-full h-full object-cover" />
+                    <button onClick={() => { setImage(null); setPreview(null); }} className="absolute top-2 right-2 bg-black/50 p-1 rounded-full"><X size={14}/></button>
+                  </div>
+                )}
+                {voicePreview && (
+                  <div className="flex items-center justify-between bg-white/5 border border-white/10 rounded-xl p-3">
+                    <VoicePlayer url={voicePreview} />
+                    <button onClick={() => { setVoice(null); setVoicePreview(null); }} className="text-gray-500 hover:text-red-400"><X size={16}/></button>
+                  </div>
+                )}
+              </form>
+            </GlassCard>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="space-y-4">
+        {posts.map(post => (
+          <GlassCard key={post.id} tilt className="group">
+            <div className="p-3 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <img src={post.userAvatar} className="w-8 h-8 rounded-full border border-white/10" referrerPolicy="no-referrer" />
+                <div>
+                  <p className="font-bold text-xs">{post.userName}</p>
+                  <p className="text-[9px] text-gray-500 uppercase tracking-widest">{formatDistanceToNow(post.timestamp)} ago</p>
+                </div>
+              </div>
+              {post.userId === user.id && (
+                <button onClick={() => handleDelete(post.id)} className="text-gray-500 hover:text-red-400 transition-colors">
+                  <Trash2 size={16} />
+                </button>
+              )}
+            </div>
+            <div className="px-3 pb-2">
+              <p className="text-gray-200 text-sm leading-relaxed">{post.content}</p>
+            </div>
+            {post.image && (
+              <div className="relative aspect-video overflow-hidden border-y border-white/5">
+                {post.image.endsWith('.mp4') || post.image.endsWith('.mov') ? (
+                  <video src={post.image} controls className="w-full h-full object-cover" />
+                ) : (
+                  <img 
+                    src={post.image} 
+                    className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" 
+                    referrerPolicy="no-referrer" 
+                  />
+                )}
+              </div>
+            )}
+            {post.voice && (
+              <div className="px-3 pb-3">
+                <VoicePlayer url={post.voice} />
+              </div>
+            )}
+            <div className="p-3 flex items-center gap-5">
+              <button 
+                onClick={() => socket.emit("like_post", { postId: post.id, userId: user.id })}
+                className={cn(
+                  "flex items-center gap-1.5 transition-colors",
+                  post.likes.includes(user.id) ? "text-pink-500" : "text-gray-400 hover:text-pink-400"
+                )}
+              >
+                <Heart size={18} fill={post.likes.includes(user.id) ? "currentColor" : "none"} />
+                <span className="text-[10px] font-bold">{post.likes.length}</span>
+              </button>
+              <button className="flex items-center gap-1.5 text-gray-400 hover:text-blue-400 transition-colors">
+                <MessageCircle size={18} />
+                <span className="text-[10px] font-bold">{post.comments.length}</span>
+              </button>
+            </div>
+            <CommentSection post={post} user={user} />
+          </GlassCard>
+        ))}
+      </div>
+    </motion.div>
+  );
+};
+
+const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
+  const [content, setContent] = useState("");
+  const [aiMode, setAiMode] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [pendingMedia, setPendingMedia] = useState<string | null>(null);
+  const [pendingVoice, setPendingVoice] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const handleFileUpload = async (file: File) => {
+    setUploading(true);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      const data = await res.json();
+      setPendingMedia(data.url);
+    } catch (err) {
+      console.error("Upload failed:", err);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleVoiceUpload = async (blob: Blob) => {
+    setUploading(true);
+    const formData = new FormData();
+    formData.append("file", blob, "voice.ogg");
+    try {
+      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      const data = await res.json();
+      
+      // Automatically send the voice message after recording
+      socket.emit("send_message", {
+        userId: user.id,
+        userName: user.name,
+        content: "",
+        voice: data.url,
+      });
+      
+    } catch (err) {
+      console.error("Voice upload failed:", err);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!content.trim() && !pendingMedia && !pendingVoice) return;
+
+    if (aiMode) {
+      const userMsg = content;
+      setContent("");
+      setAiLoading(true);
+      
+      const response = await generateAIResponse(userMsg);
+      socket.emit("send_message", {
+        userId: "ai-assistant",
+        userName: "Colony AI",
+        content: response,
+      });
+      setAiLoading(false);
+    } else {
+      socket.emit("send_message", {
+        userId: user.id,
+        userName: user.name,
+        content,
+        image: pendingMedia,
+        voice: pendingVoice,
+      });
+      setContent("");
+      setPendingMedia(null);
+      setPendingVoice(null);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="h-[calc(100vh-160px)] flex flex-col"
+    >
+      <header className="flex justify-between items-center mb-4">
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold tracking-tighter">Community Chat</h1>
+          <div className={cn(
+            "px-2 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-widest border flex items-center gap-1",
+            aiMode ? "bg-purple-500/20 border-purple-500/40 text-purple-400" : "bg-green-500/20 border-green-500/40 text-green-400"
+          )}>
+            {!aiMode && <div className="w-1 h-1 bg-green-400 rounded-full animate-pulse" />}
+            {aiMode ? "AI Mode" : "Live"}
+          </div>
+        </div>
+        <button 
+          onClick={() => setAiMode(!aiMode)}
+          className={cn(
+            "p-2 rounded-full transition-all",
+            aiMode ? "bg-purple-600 text-white" : "bg-white/5 text-gray-400 hover:text-white"
+          )}
+        >
+          <Bot size={18} />
+        </button>
+      </header>
+
+      <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
+        {messages.map((msg, i) => {
+          const isMe = msg.userId === user.id;
+          const isAI = msg.userId === "ai-assistant";
+          return (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              key={msg.id}
+              className={cn("flex flex-col", isMe ? "items-end" : "items-start")}
+            >
+              {!isMe && <p className="text-[9px] text-gray-500 ml-1 mb-0.5 font-bold uppercase tracking-widest">{msg.userName}</p>}
+              <div className={cn(
+                "max-w-[85%] p-3 rounded-2xl shadow-lg text-sm leading-relaxed space-y-2",
+                isMe ? "bg-purple-600 text-white rounded-tr-none" : 
+                isAI ? "bg-purple-900/40 text-purple-100 rounded-tl-none border border-purple-500/30" :
+                "bg-white/10 text-gray-200 rounded-tl-none border border-white/10"
+              )}>
+                {msg.image && (
+                  <div className="rounded-lg overflow-hidden border border-white/10">
+                    {msg.image.endsWith('.mp4') || msg.image.endsWith('.mov') ? (
+                      <video src={msg.image} controls className="w-full max-h-60 object-cover" />
+                    ) : (
+                      <img src={msg.image} className="w-full max-h-60 object-cover" referrerPolicy="no-referrer" />
+                    )}
+                  </div>
+                )}
+                {msg.voice && <VoicePlayer url={msg.voice} />}
+                {msg.content && <p>{msg.content}</p>}
+                <p className={cn("text-[8px] mt-1 opacity-50", isMe ? "text-right" : "text-left")}>
+                  {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </p>
+              </div>
+            </motion.div>
+          );
+        })}
+        {aiLoading && (
+          <div className="flex items-center gap-2 text-purple-400 text-xs italic">
+            <Bot size={14} className="animate-pulse" /> AI is thinking...
+          </div>
+        )}
+        <div ref={scrollRef} />
+      </div>
+
+      <div className="space-y-2 mt-4">
+        {pendingMedia && (
+          <div className="relative w-20 h-20 rounded-lg overflow-hidden border border-purple-500/50">
+            {pendingMedia.endsWith('.mp4') || pendingMedia.endsWith('.mov') ? (
+              <video src={pendingMedia} className="w-full h-full object-cover" />
+            ) : (
+              <img src={pendingMedia} className="w-full h-full object-cover" />
+            )}
+            <button onClick={() => setPendingMedia(null)} className="absolute top-1 right-1 bg-black/50 p-0.5 rounded-full text-white"><X size={12}/></button>
+          </div>
+        )}
+        {pendingVoice && (
+          <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-full px-3 py-1.5 w-fit">
+            <VoicePlayer url={pendingVoice} />
+            <button onClick={() => setPendingVoice(null)} className="text-gray-500 hover:text-red-400"><X size={14}/></button>
+          </div>
+        )}
+        <form onSubmit={handleSend} className="flex gap-2 items-center">
+          <div className="flex-1 flex items-center gap-2 bg-white/5 border border-white/10 rounded-full px-4 py-2.5 focus-within:border-purple-500/50 transition-all">
+            <input 
+              type="file" 
+              className="hidden" 
+              ref={fileInputRef} 
+              accept="image/*,video/*" 
+              onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0])} 
+            />
+            <button 
+              type="button" 
+              onClick={() => fileInputRef.current?.click()}
+              className="text-gray-400 hover:text-blue-400 transition-colors"
+            >
+              <ImageIcon size={20} />
+            </button>
+            <input
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder={aiMode ? "Ask AI anything..." : "Message community..."}
+              className="flex-1 bg-transparent border-none focus:outline-none text-sm"
+            />
+            <VoiceRecorder onRecordingComplete={handleVoiceUpload} />
+          </div>
+          <button 
+            type="submit" 
+            disabled={uploading}
+            className="bg-purple-600 hover:bg-purple-500 p-3 rounded-full transition-all shadow-lg shadow-purple-500/20 disabled:opacity-50"
+          >
+            <Send size={20} />
+          </button>
+        </form>
+      </div>
+    </motion.div>
+  );
+};
+
+const MapTab = ({ user }: { user: User }) => {
+  const [selectedLocation, setSelectedLocation] = useState<any>(null);
+  const [aiGuide, setAiGuide] = useState<string | null>(null);
+  const [loadingGuide, setLoadingGuide] = useState(false);
+  const [isLiveEnabled, setIsLiveEnabled] = useState(false);
+  const [currentLocation, setCurrentLocation] = useState<{ lat: number, lng: number } | null>(null);
+  const [otherUsers, setOtherUsers] = useState<{ [key: string]: any }>({});
+  const watchId = useRef<number | null>(null);
+
+  const { isLoaded, loadError } = useJsApiLoader({
+    id: 'google-map-script',
+    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ""
+  });
+
+  useEffect(() => {
+    if (isLiveEnabled) {
+      if ("geolocation" in navigator) {
+        watchId.current = window.navigator.geolocation.watchPosition(
+          (position) => {
+            const loc = {
+              lat: position.coords.latitude,
+              lng: position.coords.longitude
+            };
+            setCurrentLocation(loc);
+            socket.emit("update_location", {
+              userId: user.id,
+              userName: user.name,
+              avatar: user.avatar,
+              location: loc
+            });
+          },
+          (error) => console.error("Geolocation error:", error),
+          { enableHighAccuracy: true }
+        );
+      }
+    } else {
+      if (watchId.current !== null) {
+        navigator.geolocation.clearWatch(watchId.current);
+        watchId.current = null;
+      }
+    }
+
+    return () => {
+      if (watchId.current !== null) {
+        navigator.geolocation.clearWatch(watchId.current);
+      }
+    };
+  }, [isLiveEnabled, user]);
+
+  useEffect(() => {
+    socket.on("user_location_updated", (data) => {
+      setOtherUsers(prev => ({
+        ...prev,
+        [data.userId]: data
+      }));
+    });
+
+    return () => {
+      socket.off("user_location_updated");
+    };
+  }, []);
+
+  const locations = [
+    { id: 1, name: "Colony Main Gate", lat: 12.9716, lng: 77.5946, type: "gate" },
+    { id: 2, name: "Community Center", lat: 12.9720, lng: 77.5950, type: "amenity" },
+    { id: 3, name: "Central Park", lat: 12.9710, lng: 77.5940, type: "park" },
+  ];
+
+  const mapContainerStyle = {
+    width: '100%',
+    height: '100%'
+  };
+
+  const center = currentLocation || {
+    lat: 12.9716,
+    lng: 77.5946
+  };
+
+  const handleEmergency = async (type: string) => {
+    // Initiate phone call
+    const numbers: any = {
+      'Women Safety': '181',
+      'Fire': '112',
+      'Medical': '112'
+    };
+    
+    if (numbers[type]) {
+      window.location.href = `tel:${numbers[type]}`;
+    }
+
+    setLoadingGuide(true);
+    const guide = await generateAIResponse(`Provide a 3-step emergency guide for: ${type}. Keep it very concise.`, "You are an emergency response expert.");
+    setAiGuide(guide || "Stay calm and call emergency services immediately.");
+    setLoadingGuide(false);
+  };
+
+  const openBooking = (app: string) => {
+    const urls: any = {
+      uber: "https://m.uber.com",
+      rapido: "https://www.rapido.bike"
+    };
+    window.open(urls[app], "_blank");
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="h-[calc(100vh-160px)] flex flex-col gap-4"
+    >
+      <div className="flex justify-between items-center">
+        <h1 className="text-2xl font-bold tracking-tighter">Colony Map</h1>
+        <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-full px-3 py-1.5">
+          <span className="text-[10px] uppercase tracking-widest font-bold text-gray-400">Live Location</span>
+          <button 
+            onClick={() => setIsLiveEnabled(!isLiveEnabled)}
+            className={cn(
+              "w-10 h-5 rounded-full relative transition-colors",
+              isLiveEnabled ? "bg-purple-600" : "bg-gray-700"
+            )}
+          >
+            <motion.div 
+              animate={{ x: isLiveEnabled ? 20 : 2 }}
+              className="absolute top-1 w-3 h-3 bg-white rounded-full shadow-md"
+            />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 relative rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
+        {isLoaded ? (
+          <GoogleMap
+            mapContainerStyle={mapContainerStyle}
+            center={center}
+            zoom={16}
+            options={{
+              styles: mapStyles,
+              disableDefaultUI: true,
+              zoomControl: true,
+            }}
+          >
+            {locations.map(loc => (
+              <Marker 
+                key={loc.id} 
+                position={{ lat: loc.lat, lng: loc.lng }} 
+                onClick={() => setSelectedLocation(loc)}
+              />
+            ))}
+
+            {currentLocation && (
+              <Marker 
+                position={currentLocation}
+                icon={{
+                  path: "M 0,0 m -7,0 a 7,7 0 1,0 14,0 a 7,7 0 1,0 -14,0",
+                  scale: 1,
+                  fillColor: "#a855f7",
+                  fillOpacity: 1,
+                  strokeWeight: 2,
+                  strokeColor: "#ffffff",
+                }}
+              />
+            )}
+
+            {Object.values(otherUsers).map((u: any) => (
+              <Marker 
+                key={u.userId}
+                position={u.location}
+                label={{
+                  text: u.userName,
+                  color: "white",
+                  fontSize: "10px",
+                  fontWeight: "bold",
+                  className: "bg-black/50 px-1 rounded"
+                }}
+              />
+            ))}
+          </GoogleMap>
+        ) : loadError || !import.meta.env.VITE_GOOGLE_MAPS_API_KEY ? (
+          <div className="absolute inset-0 bg-gray-900 flex flex-col items-center justify-center p-6 text-center">
+            <div className="bg-red-500/10 border border-red-500/20 p-8 rounded-3xl max-w-xs space-y-4">
+              <ShieldAlert size={48} className="mx-auto text-red-500" />
+              <div className="space-y-2">
+                <p className="text-white font-bold text-lg">Map Error</p>
+                <p className="text-gray-400 text-xs leading-relaxed">
+                  The Google Maps API key is missing or invalid. 
+                  Please configure <code className="bg-white/5 px-1 rounded text-purple-400">VITE_GOOGLE_MAPS_API_KEY</code> in your environment variables.
+                </p>
+              </div>
+              <a 
+                href="https://console.cloud.google.com/google/maps-apis/credentials" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-purple-400 hover:text-purple-300 transition-colors"
+              >
+                Get API Key <ExternalLink size={12} />
+              </a>
+            </div>
+          </div>
+        ) : (
+          <div className="absolute inset-0 bg-gray-900 flex items-center justify-center">
+            <div className="absolute inset-0 opacity-20 bg-[url('https://www.google.com/maps/vt/pb=!1m4!1m3!1i15!2i24185!3i12458!2m3!1e0!2sm!3i600000000!3m8!2sen!3sus!5e1105!12m4!1e68!2m2!1sset!2sRoadmap!4e0!5m1!1e0!2s')] bg-cover" />
+            <div className="relative z-10 text-center space-y-3">
+              <MapIcon size={40} className="mx-auto text-purple-400 animate-bounce" />
+              <p className="text-gray-400 text-sm font-medium">Interactive Map View</p>
+            </div>
+          </div>
+        )}
+
+        {/* Floating Ride Buttons */}
+        <div className="absolute top-4 right-4 flex flex-col gap-2">
+          <button 
+            onClick={() => openBooking('uber')}
+            className="w-12 h-12 bg-black border border-white/20 rounded-full flex items-center justify-center shadow-xl hover:bg-white/10 transition-all group"
+            title="Book Uber"
+          >
+            <span className="text-white font-black text-xl group-hover:scale-110 transition-transform">U</span>
+          </button>
+          <button 
+            onClick={() => openBooking('rapido')}
+            className="w-12 h-12 bg-yellow-500 rounded-full flex items-center justify-center shadow-xl hover:bg-yellow-400 transition-all group"
+            title="Book Rapido"
+          >
+            <span className="text-black font-black text-xl group-hover:scale-110 transition-transform">R</span>
+          </button>
+        </div>
+        
+        {selectedLocation && (
+          <motion.div 
+            initial={{ y: 100 }}
+            animate={{ y: 0 }}
+            className="absolute bottom-4 left-4 right-4 bg-black/80 backdrop-blur-xl border border-white/10 p-4 rounded-2xl z-20"
+          >
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="font-bold text-sm">{selectedLocation.name}</h3>
+                <p className="text-[10px] text-gray-400">Coordinates: {selectedLocation.lat}, {selectedLocation.lng}</p>
+              </div>
+              <button onClick={() => setSelectedLocation(null)} className="text-gray-500"><X size={14}/></button>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button onClick={() => openBooking('uber')} className="flex-1 bg-black border border-white/20 py-2 rounded-xl text-[10px] font-bold flex items-center justify-center gap-2 hover:bg-white/5 transition-colors">
+                Book Uber
+              </button>
+              <button onClick={() => openBooking('rapido')} className="flex-1 bg-yellow-500 text-black py-2 rounded-xl text-[10px] font-bold flex items-center justify-center gap-2 hover:bg-yellow-400 transition-colors">
+                Book Rapido
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <button onClick={() => handleEmergency('Women Safety')} className="bg-pink-600/10 hover:bg-pink-600/20 border border-pink-600/20 p-3 rounded-2xl flex flex-col items-center gap-1.5 transition-all">
+          <ShieldAlert size={20} className="text-pink-500" />
+          <span className="text-[9px] font-bold uppercase tracking-widest">Women</span>
+        </button>
+        <button onClick={() => handleEmergency('Fire')} className="bg-orange-600/10 hover:bg-orange-600/20 border border-orange-600/20 p-3 rounded-2xl flex flex-col items-center gap-1.5 transition-all">
+          <Flame size={20} className="text-orange-500" />
+          <span className="text-[9px] font-bold uppercase tracking-widest">Fire</span>
+        </button>
+        <button onClick={() => handleEmergency('Medical')} className="bg-red-600/10 hover:bg-red-600/20 border border-red-600/20 p-3 rounded-2xl flex flex-col items-center gap-1.5 transition-all">
+          <Ambulance size={20} className="text-red-500" />
+          <span className="text-[9px] font-bold uppercase tracking-widest">Medical</span>
+        </button>
+      </div>
+
+      <AnimatePresence>
+        {aiGuide && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+          >
+            <GlassCard className="p-4 border-red-500/20 bg-red-500/5 space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold flex items-center gap-2 text-red-400">
+                  <Bot size={14} /> AI Emergency Guide
+                </h3>
+                <button onClick={() => setAiGuide(null)} className="text-gray-500"><X size={14}/></button>
+              </div>
+              <p className="text-xs text-gray-300 leading-relaxed">{aiGuide}</p>
+            </GlassCard>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+};
+
+const QRModal = ({ url, onClose }: { url: string, onClose: () => void }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(window.location.origin);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[60] flex items-center justify-center p-6 bg-black/80 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.9, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        className="bg-zinc-900 border border-white/10 p-8 rounded-3xl flex flex-col items-center gap-6 max-w-xs w-full"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="bg-white p-4 rounded-2xl">
+          <QRCodeSVG value={window.location.origin} size={200} />
+        </div>
+        <div className="text-center space-y-2">
+          <h3 className="text-lg font-bold">Hackathon App Link</h3>
+          <p className="text-xs text-gray-400">Scan or copy the link to open ColonyConnect</p>
+        </div>
+        <div className="w-full space-y-2">
+          <button 
+            onClick={handleCopy}
+            className={cn(
+              "w-full py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2",
+              copied ? "bg-green-600 text-white" : "bg-purple-600 text-white hover:bg-purple-500"
+            )}
+          >
+            {copied ? <Check size={18} /> : <ExternalLink size={18} />}
+            {copied ? "Link Copied!" : "Copy App Link"}
+          </button>
+          <button onClick={onClose} className="w-full bg-white/5 hover:bg-white/10 py-3 rounded-xl font-bold transition-colors">
+            Close
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+};
+
+const ProfileTab = ({ user, setUser, posts, onLogout, setWallpaper }: { user: User, setUser: any, posts: Post[], onLogout: any, setWallpaper: any }) => {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(user.name);
+  const [bio, setBio] = useState(user.bio || "");
+  const [website, setWebsite] = useState(user.website || "");
+  const [showQR, setShowQR] = useState(false);
+  const [isGeneratingBio, setIsGeneratingBio] = useState(false);
+  const wallpaperInputRef = useRef<HTMLInputElement>(null);
+
+  const handleSave = async () => {
+    const res = await fetch(`/api/profile/${user.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, bio, website })
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      setUser(updated);
+      localStorage.setItem("colony_user", JSON.stringify(updated));
+      setEditing(false);
+    }
+  };
+
+  const handleWallpaperChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch("/api/upload", { method: "POST", body: formData });
+    if (res.ok) {
+      const { url } = await res.json();
+      setWallpaper(url);
+      localStorage.setItem("colony_wallpaper", url);
+    }
+  };
+
+  const generateAIBio = async () => {
+    setIsGeneratingBio(true);
+    try {
+      const prompt = `Generate a short, professional, and friendly bio for a community app. Name: ${name}. Current bio: ${bio}. Interests: Community building, local events. Keep it under 150 characters.`;
+      const suggestion = await generateAIResponse(prompt);
+      setBio(suggestion);
+    } catch (error) {
+      console.error("AI Bio Error:", error);
+    } finally {
+      setIsGeneratingBio(false);
+    }
+  };
+
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append("avatar", file);
+    const res = await fetch(`/api/profile/${user.id}/avatar`, { method: "POST", body: formData });
+    if (res.ok) {
+      const { avatar } = await res.json();
+      const updated = { ...user, avatar };
+      setUser(updated);
+      localStorage.setItem("colony_user", JSON.stringify(updated));
+    }
+  };
+
+  const myPosts = posts.filter(p => p.userId === user.id);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="space-y-8"
+    >
+      <div className="flex flex-col items-center text-center space-y-4">
+        <div className="relative group">
+          <img src={user.avatar} className="w-32 h-32 rounded-full border-4 border-purple-500/20 p-1 object-cover" referrerPolicy="no-referrer" />
+          <label className="absolute bottom-0 right-0 bg-purple-600 p-2 rounded-full cursor-pointer hover:bg-purple-500 transition-colors shadow-lg">
+            <Camera size={18} />
+            <input type="file" className="hidden" accept="image/*" onChange={handleAvatarChange} />
+          </label>
+        </div>
+        
+        {editing ? (
+          <div className="w-full space-y-4">
+            <input value={name} onChange={e => setName(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-center text-xl font-bold" />
+            <div className="relative">
+              <textarea value={bio} onChange={e => setBio(e.target.value)} placeholder="Tell us about yourself" className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-center text-sm resize-none min-h-[100px]" />
+              <button 
+                onClick={generateAIBio}
+                disabled={isGeneratingBio}
+                className="absolute bottom-3 right-3 p-2 bg-purple-600/20 hover:bg-purple-600/40 rounded-lg text-purple-400 transition-all disabled:opacity-50"
+                title="Generate AI Bio"
+              >
+                <Bot size={16} className={isGeneratingBio ? "animate-pulse" : ""} />
+              </button>
+            </div>
+            <input value={website} onChange={e => setWebsite(e.target.value)} placeholder="Website URL" className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-center text-sm" />
+            <div className="flex gap-2">
+              <button onClick={handleSave} className="flex-1 bg-green-600 py-3 rounded-xl font-bold flex items-center justify-center gap-2"><Check size={18}/> Save</button>
+              <button onClick={() => setEditing(false)} className="flex-1 bg-white/5 py-3 rounded-xl font-bold flex items-center justify-center gap-2"><X size={18}/> Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <h2 className="text-3xl font-bold tracking-tighter">{user.name}</h2>
+            <p className="text-gray-400 text-sm max-w-xs mx-auto">{user.bio || "No bio yet."}</p>
+            {user.website && (
+              <a href={user.website} target="_blank" className="text-purple-400 text-sm flex items-center justify-center gap-1 hover:underline">
+                <ExternalLink size={14} /> {user.website.replace(/^https?:\/\//, '')}
+              </a>
+            )}
+            <div className="flex flex-wrap gap-3 justify-center pt-4">
+              <button onClick={() => setEditing(true)} className="bg-white/5 hover:bg-white/10 px-5 py-2 rounded-full text-xs font-bold transition-colors flex items-center gap-2">
+                <Edit2 size={14} /> Edit Profile
+              </button>
+              <button 
+                onClick={() => wallpaperInputRef.current?.click()}
+                className="bg-white/5 hover:bg-white/10 px-5 py-2 rounded-full text-xs font-bold transition-colors flex items-center gap-2"
+              >
+                <ImageIcon size={14} /> Wallpaper
+                <input type="file" className="hidden" ref={wallpaperInputRef} accept="image/*" onChange={handleWallpaperChange} />
+              </button>
+              <button onClick={() => setShowQR(true)} className="bg-purple-600 hover:bg-purple-500 px-5 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-2 shadow-lg shadow-purple-500/20">
+                <QrCode size={14} /> Share App
+              </button>
+              <a 
+                href={window.location.origin} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="bg-white/5 hover:bg-white/10 px-5 py-2 rounded-full text-xs font-bold transition-colors flex items-center gap-2"
+              >
+                <Globe size={14} /> Visit Website
+              </a>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4">
+        <GlassCard className="p-4 text-center">
+          <p className="text-2xl font-bold">{myPosts.length}</p>
+          <p className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">My Posts</p>
+        </GlassCard>
+      </div>
+
+      <section className="space-y-4">
+        <h3 className="text-xl font-bold">My Recent Posts</h3>
+        <div className="space-y-4">
+          {myPosts.length > 0 ? myPosts.map(post => (
+            <GlassCard key={post.id} className="p-4 flex gap-4 items-center">
+              {post.image && <img src={post.image} className="w-16 h-16 rounded-xl object-cover" referrerPolicy="no-referrer" />}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-gray-200 line-clamp-2">{post.content}</p>
+                <p className="text-[10px] text-gray-500 mt-1">{formatDistanceToNow(new Date(post.timestamp))} ago</p>
+              </div>
+            </GlassCard>
+          )) : (
+            <p className="text-center text-gray-500 text-sm py-8">No posts yet.</p>
+          )}
+        </div>
+      </section>
+
+      <button onClick={onLogout} className="w-full bg-red-600/10 hover:bg-red-600/20 border border-red-600/20 text-red-500 py-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all">
+        <LogOut size={18} /> Logout
+      </button>
+
+      <AnimatePresence>
+        {showQR && <QRModal url={window.location.origin} onClose={() => setShowQR(false)} />}
+      </AnimatePresence>
+    </motion.div>
+  );
+};
+
+// --- Auth Component ---
+
+const Auth = ({ onAuth }: { onAuth: any }) => {
+  const [isLogin, setIsLogin] = useState(true);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    const endpoint = isLogin ? "/api/auth/login" : "/api/auth/register";
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, email, password })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      localStorage.setItem("colony_user", JSON.stringify(data));
+      onAuth(data);
+    } else {
+      setError(data.error);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-black text-white flex items-center justify-center p-4">
+      <FloatingOrbs />
+      <GlassCard className="w-full max-w-md p-8 space-y-8">
+        <div className="text-center space-y-2">
+          <h1 className="text-4xl font-bold tracking-tighter">Colony<span className="text-purple-500">Connect</span></h1>
+          <p className="text-gray-400">{isLogin ? "Welcome back, neighbor." : "Join your community today."}</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {!isLogin && (
+            <input
+              type="text"
+              placeholder="Full Name"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-xl p-4 focus:outline-none focus:border-purple-500/50"
+              required
+            />
+          )}
+          <input
+            type="email"
+            placeholder="Email Address"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            className="w-full bg-white/5 border border-white/10 rounded-xl p-4 focus:outline-none focus:border-purple-500/50"
+            required
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            className="w-full bg-white/5 border border-white/10 rounded-xl p-4 focus:outline-none focus:border-purple-500/50"
+            required
+          />
+          {error && <p className="text-red-400 text-sm text-center">{error}</p>}
+          <button type="submit" className="w-full bg-purple-600 hover:bg-purple-500 py-4 rounded-xl font-bold transition-all shadow-lg shadow-purple-500/20">
+            {isLogin ? "Login" : "Register"}
+          </button>
+        </form>
+
+        <p className="text-center text-sm text-gray-400">
+          {isLogin ? "New here?" : "Already have an account?"}{" "}
+          <button onClick={() => setIsLogin(!isLogin)} className="text-purple-400 font-bold hover:underline">
+            {isLogin ? "Create account" : "Login now"}
+          </button>
+        </p>
+      </GlassCard>
+    </div>
+  );
+};
