@@ -3,6 +3,59 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - email: string (required)
+    //   - avatar: string (optional)
+    //   - bio: string (optional)
+    //   - website: string (optional)
+    //
+    // Collection: posts
+    // Document ID: {postId}
+    // Fields:
+    //   - id: string (required)
+    //   - userId: string (required)
+    //   - userName: string (required)
+    //   - userAvatar: string (optional)
+    //   - content: string (required)
+    //   - image: string (optional)
+    //   - voice: string (optional)
+    //   - timestamp: number (required)
+    //   - likes: list (required)
+    //   - comments: list (required)
+    //
+    // Collection: messages
+    // Document ID: {messageId}
+    // Fields:
+    //   - id: string (required)
+    //   - userId: string (required)
+    //   - userName: string (required)
+    //   - content: string (required)
+    //   - image: string (optional)
+    //   - voice: string (optional)
+    //   - timestamp: number (required)
+    //   - triggeredBy: string (optional)
+    //
+    // Collection: locations
+    // Document ID: {locationId}
+    // Fields:
+    //   - id: string (required)
+    //   - userId: string (required)
+    //   - userName: string (required)
+    //   - userAvatar: string (optional)
+    //   - lat: number (required)
+    //   - lng: number (required)
+    //   - timestamp: number (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
     // Helper Functions
     // ===============================================================
     function isAuthenticated() {
@@ -17,10 +70,6 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == resource.data.userId;
     }
 
-    function uidUnchanged() {
-      return !('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid;
-    }
-
     function uidNotModified() {
       return !('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId;
     }
@@ -29,40 +78,64 @@ service cloud.firestore {
       return request.resource.data.keys().hasAll(fields);
     }
 
+    function isValidString(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+             request.resource.data[field].size() >= minLen &&
+             request.resource.data[field].size() <= maxLen;
+    }
+
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !(field in request.resource.data) ||
+             (request.resource.data[field] is string &&
+              request.resource.data[field].size() >= minLen &&
+              request.resource.data[field].size() <= maxLen);
+    }
+
     // ===============================================================
     // Domain Validators
     // ===============================================================
     function isValidUser() {
       return hasRequiredFields(['id', 'name', 'email']) &&
-             request.resource.data.id is string &&
-             request.resource.data.name is string &&
-             request.resource.data.email is string;
+             isValidString('id', 1, 100) &&
+             isValidString('name', 1, 100) &&
+             isValidString('email', 1, 200) &&
+             isValidOptionalString('avatar', 0, 1000) &&
+             isValidOptionalString('bio', 0, 500) &&
+             isValidOptionalString('website', 0, 200);
     }
 
     function isValidPost() {
-      return hasRequiredFields(['id', 'userId', 'userName', 'content', 'timestamp', 'likes']) &&
-             request.resource.data.id is string &&
-             request.resource.data.userId is string &&
-             request.resource.data.userName is string &&
-             request.resource.data.content is string &&
+      return hasRequiredFields(['id', 'userId', 'userName', 'content', 'timestamp', 'likes', 'comments']) &&
+             isValidString('id', 1, 100) &&
+             isValidString('userId', 1, 100) &&
+             isValidString('userName', 1, 100) &&
+             isValidOptionalString('userAvatar', 0, 1000) &&
+             isValidString('content', 0, 5000) &&
+             isValidOptionalString('image', 0, 1000) &&
+             isValidOptionalString('voice', 0, 1000) &&
              request.resource.data.timestamp is number &&
-             request.resource.data.likes is number;
+             request.resource.data.likes is list &&
+             request.resource.data.comments is list;
     }
 
     function isValidMessage() {
-      return hasRequiredFields(['id', 'senderId', 'senderName', 'text', 'timestamp']) &&
-             request.resource.data.id is string &&
-             request.resource.data.senderId is string &&
-             request.resource.data.senderName is string &&
-             request.resource.data.text is string &&
+      return hasRequiredFields(['id', 'userId', 'userName', 'content', 'timestamp']) &&
+             isValidString('id', 1, 100) &&
+             isValidString('userId', 1, 100) &&
+             isValidString('userName', 1, 100) &&
+             isValidString('content', 0, 5000) &&
+             isValidOptionalString('image', 0, 1000) &&
+             isValidOptionalString('voice', 0, 1000) &&
+             isValidOptionalString('triggeredBy', 0, 100) &&
              request.resource.data.timestamp is number;
     }
 
     function isValidLocation() {
       return hasRequiredFields(['id', 'userId', 'userName', 'lat', 'lng', 'timestamp']) &&
-             request.resource.data.id is string &&
-             request.resource.data.userId is string &&
-             request.resource.data.userName is string &&
+             isValidString('id', 1, 100) &&
+             isValidString('userId', 1, 100) &&
+             isValidString('userName', 1, 100) &&
+             isValidOptionalString('userAvatar', 0, 1000) &&
              request.resource.data.lat is number &&
              request.resource.data.lng is number &&
              request.resource.data.timestamp is number;
@@ -92,9 +165,9 @@ service cloud.firestore {
 
     match /messages/{messageId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidMessage() && request.resource.data.senderId == request.auth.uid;
-      allow update: if isAuthenticated() && isValidMessage() && request.resource.data.senderId == resource.data.senderId && request.auth.uid == resource.data.senderId;
-      allow delete: if isAuthenticated() && request.auth.uid == resource.data.senderId;
+      allow create: if isAuthenticated() && isValidMessage() && (request.resource.data.userId == request.auth.uid || request.resource.data.userId == 'ai-assistant');
+      allow update: if isAuthenticated() && isValidMessage() && uidNotModified() && (request.auth.uid == resource.data.userId || resource.data.userId == 'ai-assistant');
+      allow delete: if isAuthenticated() && (request.auth.uid == resource.data.userId || (resource.data.userId == 'ai-assistant' && resource.data.triggeredBy == request.auth.uid));
     }
 
     match /locations/{locationId} {

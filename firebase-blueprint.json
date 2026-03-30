@@ -9,12 +9,8 @@
         "name": { "type": "string" },
         "email": { "type": "string" },
         "avatar": { "type": "string" },
-        "wallpaper": { "type": "string" },
         "bio": { "type": "string" },
-        "phone": { "type": "string" },
-        "emergencyContact": { "type": "string" },
-        "bloodGroup": { "type": "string" },
-        "vehicleNumber": { "type": "string" }
+        "website": { "type": "string" }
       },
       "required": ["id", "name", "email"]
     },
@@ -28,9 +24,13 @@
         "userName": { "type": "string" },
         "userAvatar": { "type": "string" },
         "content": { "type": "string" },
-        "imageUrl": { "type": "string" },
+        "image": { "type": "string" },
+        "voice": { "type": "string" },
         "timestamp": { "type": "number" },
-        "likes": { "type": "number" },
+        "likes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "comments": {
           "type": "array",
           "items": {
@@ -39,14 +39,14 @@
               "id": { "type": "string" },
               "userId": { "type": "string" },
               "userName": { "type": "string" },
-              "userAvatar": { "type": "string" },
               "content": { "type": "string" },
               "timestamp": { "type": "number" }
-            }
+            },
+            "required": ["id", "userId", "userName", "content", "timestamp"]
           }
         }
       },
-      "required": ["id", "userId", "userName", "content", "timestamp", "likes"]
+      "required": ["id", "userId", "userName", "content", "timestamp", "likes", "comments"]
     },
     "Message": {
       "title": "Message",
@@ -54,14 +54,15 @@
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "senderId": { "type": "string" },
-        "senderName": { "type": "string" },
-        "senderAvatar": { "type": "string" },
-        "text": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "content": { "type": "string" },
+        "image": { "type": "string" },
+        "voice": { "type": "string" },
         "timestamp": { "type": "number" },
-        "isAi": { "type": "boolean" }
+        "triggeredBy": { "type": "string" }
       },
-      "required": ["id", "senderId", "senderName", "text", "timestamp"]
+      "required": ["id", "userId", "userName", "content", "timestamp"]
     },
     "Location": {
       "title": "Location",

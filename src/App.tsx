@@ -38,7 +38,9 @@ import {
   Square
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { GoogleMap, useJsApiLoader, Marker } from "@react-google-maps/api";
+import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
+import "leaflet/dist/leaflet.css";
+import L from "leaflet";
 import { formatDistanceToNow } from "date-fns";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -59,18 +61,6 @@ function cn(...inputs: ClassValue[]) {
 }
 
 // --- Components ---
-
-const mapStyles = [
-  { elementType: "geometry", stylers: [{ color: "#242f3e" }] },
-  { elementType: "labels.text.stroke", stylers: [{ color: "#242f3e" }] },
-  { elementType: "labels.text.fill", stylers: [{ color: "#746855" }] },
-  { featureType: "administrative.locality", elementType: "labels.text.fill", stylers: [{ color: "#d59563" }] },
-  { featureType: "poi", elementType: "labels.text.fill", stylers: [{ color: "#d59563" }] },
-  { featureType: "road", elementType: "geometry", stylers: [{ color: "#38414e" }] },
-  { featureType: "road", elementType: "geometry.stroke", stylers: [{ color: "#212a37" }] },
-  { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#9ca5b3" }] },
-  { featureType: "water", elementType: "geometry", stylers: [{ color: "#17263c" }] },
-];
 
 const CommentSection = ({ post, user }: { post: Post, user: User }) => {
   const [comment, setComment] = useState("");
@@ -960,11 +950,6 @@ const MapTab = ({ user }: { user: User }) => {
   const [otherUsers, setOtherUsers] = useState<{ [key: string]: any }>({});
   const watchId = useRef<number | null>(null);
 
-  const { isLoaded, loadError } = useJsApiLoader({
-    id: 'google-map-script',
-    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ""
-  });
-
   useEffect(() => {
     if (isLiveEnabled) {
       if ("geolocation" in navigator) {
@@ -1025,11 +1010,6 @@ const MapTab = ({ user }: { user: User }) => {
     { id: 3, name: "Central Park", lat: 12.9710, lng: 77.5940, type: "park" },
   ];
 
-  const mapContainerStyle = {
-    width: '100%',
-    height: '100%'
-  };
-
   const center = currentLocation || {
     lat: 12.9716,
     lng: 77.5946
@@ -1088,83 +1068,51 @@ const MapTab = ({ user }: { user: User }) => {
       </div>
 
       <div className="flex-1 relative rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
-        {isLoaded ? (
-          <GoogleMap
-            mapContainerStyle={mapContainerStyle}
-            center={center}
-            zoom={16}
-            options={{
-              styles: mapStyles,
-              disableDefaultUI: true,
-              zoomControl: true,
-            }}
-          >
-            {locations.map(loc => (
-              <Marker 
-                key={loc.id} 
-                position={{ lat: loc.lat, lng: loc.lng }} 
-                onClick={() => setSelectedLocation(loc)}
-              />
-            ))}
+        <MapContainer
+          center={[center.lat, center.lng]}
+          zoom={16}
+          style={{ height: '100%', width: '100%' }}
+          className="z-0"
+        >
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          
+          {locations.map(loc => (
+            <Marker 
+              key={loc.id} 
+              position={[loc.lat, loc.lng]}
+              eventHandlers={{
+                click: () => setSelectedLocation(loc),
+              }}
+            />
+          ))}
 
-            {currentLocation && (
-              <Marker 
-                position={currentLocation}
-                icon={{
-                  path: "M 0,0 m -7,0 a 7,7 0 1,0 14,0 a 7,7 0 1,0 -14,0",
-                  scale: 1,
-                  fillColor: "#a855f7",
-                  fillOpacity: 1,
-                  strokeWeight: 2,
-                  strokeColor: "#ffffff",
-                }}
-              />
-            )}
+          {currentLocation && (
+            <Marker 
+              position={[currentLocation.lat, currentLocation.lng]}
+              icon={L.divIcon({
+                className: 'custom-div-icon',
+                html: "<div style='background-color:#a855f7;width:14px;height:14px;border-radius:50%;border:2px solid white;'></div>",
+                iconSize: [14, 14],
+                iconAnchor: [7, 7]
+              })}
+            />
+          )}
 
-            {Object.values(otherUsers).map((u: any) => (
-              <Marker 
-                key={u.userId}
-                position={u.location}
-                label={{
-                  text: u.userName,
-                  color: "white",
-                  fontSize: "10px",
-                  fontWeight: "bold",
-                  className: "bg-black/50 px-1 rounded"
-                }}
-              />
-            ))}
-          </GoogleMap>
-        ) : loadError || !import.meta.env.VITE_GOOGLE_MAPS_API_KEY ? (
-          <div className="absolute inset-0 bg-gray-900 flex flex-col items-center justify-center p-6 text-center">
-            <div className="bg-red-500/10 border border-red-500/20 p-8 rounded-3xl max-w-xs space-y-4">
-              <ShieldAlert size={48} className="mx-auto text-red-500" />
-              <div className="space-y-2">
-                <p className="text-white font-bold text-lg">Map Error</p>
-                <p className="text-gray-400 text-xs leading-relaxed">
-                  The Google Maps API key is missing or invalid. 
-                  Please configure <code className="bg-white/5 px-1 rounded text-purple-400">VITE_GOOGLE_MAPS_API_KEY</code> in your environment variables.
-                </p>
-              </div>
-              <a 
-                href="https://console.cloud.google.com/google/maps-apis/credentials" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-purple-400 hover:text-purple-300 transition-colors"
-              >
-                Get API Key <ExternalLink size={12} />
-              </a>
-            </div>
-          </div>
-        ) : (
-          <div className="absolute inset-0 bg-gray-900 flex items-center justify-center">
-            <div className="absolute inset-0 opacity-20 bg-[url('https://www.google.com/maps/vt/pb=!1m4!1m3!1i15!2i24185!3i12458!2m3!1e0!2sm!3i600000000!3m8!2sen!3sus!5e1105!12m4!1e68!2m2!1sset!2sRoadmap!4e0!5m1!1e0!2s')] bg-cover" />
-            <div className="relative z-10 text-center space-y-3">
-              <MapIcon size={40} className="mx-auto text-purple-400 animate-bounce" />
-              <p className="text-gray-400 text-sm font-medium">Interactive Map View</p>
-            </div>
-          </div>
-        )}
+          {Object.values(otherUsers).map((u: any) => (
+            <Marker 
+              key={u.userId}
+              position={[u.location.lat, u.location.lng]}
+              icon={L.divIcon({
+                className: 'custom-div-icon',
+                html: `<div style='background-color:rgba(0,0,0,0.5);color:white;padding:2px 4px;border-radius:4px;font-size:10px;font-weight:bold;white-space:nowrap;'>${u.userName}</div>`,
+                iconAnchor: [0, 0]
+              })}
+            />
+          ))}
+        </MapContainer>
 
         {/* Floating Ride Buttons */}
         <div className="absolute top-4 right-4 flex flex-col gap-2">

@@ -21,7 +21,6 @@ export default defineConfig(({mode}) => {
           manualChunks: {
             'vendor-react': ['react', 'react-dom'],
             'vendor-firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/storage'],
-            'vendor-maps': ['@react-google-maps/api'],
             'vendor-motion': ['motion/react'],
             'vendor-icons': ['lucide-react'],
           },
