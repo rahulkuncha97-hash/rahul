@@ -278,7 +278,8 @@ const HomeTab = ({ user, posts, messages }: { user: User, posts: Post[], message
     >
       <header className="flex items-center justify-between">
         <div className="space-y-1">
-          <h1 className="text-3xl font-bold tracking-tighter">Hi, {user.name.split(' ')[0]}</h1>
+          <h1 className="text-3xl font-bold tracking-tighter">ColonyConnect</h1>
+          <p className="text-gray-400 text-lg">Hi, {user.name.split(' ')[0]}</p>
           <p className="text-gray-500 text-sm">Your community is active today.</p>
         </div>
         <div className="w-12 h-12 rounded-full bg-purple-500/10 border border-purple-500/20 flex items-center justify-center">
@@ -513,8 +514,13 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
                 <div className="flex items-center gap-3">
                   <label className="flex-1 flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-2.5 cursor-pointer transition-colors">
                     <ImageIcon size={18} className="text-blue-400" />
-                    <span className="text-xs font-medium text-gray-400">Media</span>
+                    <span className="text-xs font-medium text-gray-400 hidden sm:inline">Gallery</span>
                     <input type="file" className="hidden" accept="image/*,video/*" onChange={handleImageChange} />
+                  </label>
+                  <label className="flex-1 flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-2.5 cursor-pointer transition-colors">
+                    <Camera size={18} className="text-pink-400" />
+                    <span className="text-xs font-medium text-gray-400 hidden sm:inline">Camera</span>
+                    <input type="file" className="hidden" accept="image/*,video/*" capture="environment" onChange={handleImageChange} />
                   </label>
                   <VoiceRecorder label="Voice" onRecordingComplete={(blob) => {
                     setVoice(blob);
@@ -565,8 +571,12 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
                 </div>
               </div>
               {post.userId === user.id && !post.isOptimistic && (
-                <button onClick={() => handleDelete(post.id)} className="text-gray-500 hover:text-red-400 transition-colors">
-                  <Trash2 size={16} />
+                <button 
+                  onClick={() => handleDelete(post.id)} 
+                  className="p-2 -mr-2 text-gray-500 hover:text-red-400 hover:bg-red-400/10 rounded-full transition-all active:scale-95"
+                  aria-label="Delete post"
+                >
+                  <Trash2 size={18} />
                 </button>
               )}
             </div>
@@ -930,8 +940,19 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
               className="text-gray-400 hover:text-blue-400 transition-colors flex items-center gap-1"
             >
               <ImageIcon size={20} />
-              <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:inline">Media</span>
+              <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:inline">Gallery</span>
             </button>
+            <label className="text-gray-400 hover:text-pink-400 transition-colors flex items-center gap-1 cursor-pointer">
+              <Camera size={20} />
+              <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:inline">Camera</span>
+              <input 
+                type="file" 
+                className="hidden" 
+                accept="image/*,video/*" 
+                capture="environment"
+                onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0])} 
+              />
+            </label>
             <input
               value={content}
               onChange={(e) => setContent(e.target.value)}
@@ -1113,17 +1134,22 @@ const MapTab = ({ user }: { user: User }) => {
             />
           )}
 
-          {Object.values(otherUsers).map((u: any) => (
-            <Marker 
-              key={u.userId}
-              position={[u.location.lat, u.location.lng]}
-              icon={L.divIcon({
-                className: 'custom-div-icon',
-                html: `<div style='background-color:rgba(0,0,0,0.5);color:white;padding:2px 4px;border-radius:4px;font-size:10px;font-weight:bold;white-space:nowrap;'>${u.userName}</div>`,
-                iconAnchor: [0, 0]
-              })}
-            />
-          ))}
+          {Object.values(otherUsers).map((u: any) => {
+            const lat = u.lat ?? u.location?.lat;
+            const lng = u.lng ?? u.location?.lng;
+            if (lat === undefined || lng === undefined) return null;
+            return (
+              <Marker 
+                key={u.userId || u.id}
+                position={[lat, lng]}
+                icon={L.divIcon({
+                  className: 'custom-div-icon',
+                  html: `<div style='background-color:rgba(0,0,0,0.5);color:white;padding:2px 4px;border-radius:4px;font-size:10px;font-weight:bold;white-space:nowrap;'>${u.userName || 'User'}</div>`,
+                  iconAnchor: [0, 0]
+                })}
+              />
+            );
+          })}
         </MapContainer>
 
         {/* Floating Ride Buttons */}
