@@ -45,8 +45,20 @@ import { formatDistanceToNow } from "date-fns";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { fbDb as db } from "./firebase-utils";
-import { auth } from "./firebase";
+import { auth, db as firestoreDb } from "./firebase";
+import { getDocFromServer, doc } from "firebase/firestore";
 import { signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
+
+async function testConnection() {
+  try {
+    await getDocFromServer(doc(firestoreDb, 'test', 'connection'));
+  } catch (error) {
+    if(error instanceof Error && error.message.includes('the client is offline')) {
+      console.error("Please check your Firebase configuration.");
+    }
+  }
+}
+testConnection();
 import { User, Post, Message, Comment } from "./types";
 import { summarizeFeed, suggestPost, generateAIResponse } from "./services/aiService";
 
@@ -1466,7 +1478,11 @@ const Auth = ({ onAuth }: { onAuth: any }) => {
         await db.saveUser(newUser);
       }
     } catch (err: any) {
-      setError(err.message);
+      if (err.code === 'auth/operation-not-allowed') {
+        setError("Email/Password login is not enabled. Please use Google Login or enable it in your Firebase Console.");
+      } else {
+        setError(err.message || "Authentication failed.");
+      }
     } finally {
       setLoading(false);
     }

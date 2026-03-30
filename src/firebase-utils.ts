@@ -1,63 +1,162 @@
 import { collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit, where } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
-import { db, storage } from './firebase';
+import { db, storage, auth } from './firebase';
 import { User, Post, Message } from './types';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 export const fbDb = {
   async getPosts(): Promise<Post[]> {
-    const q = query(collection(db, 'posts'), orderBy('timestamp', 'desc'));
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => doc.data() as Post);
+    try {
+      const q = query(collection(db, 'posts'), orderBy('timestamp', 'desc'));
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => doc.data() as Post);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, 'posts');
+      return [];
+    }
   },
   subscribePosts(callback: (posts: Post[]) => void) {
     const q = query(collection(db, 'posts'), orderBy('timestamp', 'desc'));
     return onSnapshot(q, (snapshot) => {
       callback(snapshot.docs.map(doc => doc.data() as Post));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'posts');
     });
   },
   async savePost(post: Post): Promise<void> {
-    await setDoc(doc(db, 'posts', post.id), post);
+    try {
+      await setDoc(doc(db, 'posts', post.id), post);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `posts/${post.id}`);
+    }
   },
   async updatePost(updatedPost: Post): Promise<void> {
-    await updateDoc(doc(db, 'posts', updatedPost.id), updatedPost as any);
+    try {
+      await updateDoc(doc(db, 'posts', updatedPost.id), updatedPost as any);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `posts/${updatedPost.id}`);
+    }
   },
   async deletePost(id: string): Promise<void> {
-    await deleteDoc(doc(db, 'posts', id));
+    try {
+      await deleteDoc(doc(db, 'posts', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `posts/${id}`);
+    }
   },
 
   async getMessages(): Promise<Message[]> {
-    const q = query(collection(db, 'messages'), orderBy('timestamp', 'asc'));
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => doc.data() as Message);
+    try {
+      const q = query(collection(db, 'messages'), orderBy('timestamp', 'asc'));
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => doc.data() as Message);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, 'messages');
+      return [];
+    }
   },
   subscribeMessages(callback: (messages: Message[]) => void) {
     const q = query(collection(db, 'messages'), orderBy('timestamp', 'asc'));
     return onSnapshot(q, (snapshot) => {
       callback(snapshot.docs.map(doc => doc.data() as Message));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'messages');
     });
   },
   async saveMessage(message: Message): Promise<void> {
-    await setDoc(doc(db, 'messages', message.id), message);
+    try {
+      await setDoc(doc(db, 'messages', message.id), message);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `messages/${message.id}`);
+    }
   },
   async deleteMessage(id: string): Promise<void> {
-    await deleteDoc(doc(db, 'messages', id));
+    try {
+      await deleteDoc(doc(db, 'messages', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `messages/${id}`);
+    }
   },
 
   async getUser(id: string): Promise<User | null> {
-    const docSnap = await getDoc(doc(db, 'users', id));
-    return docSnap.exists() ? (docSnap.data() as User) : null;
+    try {
+      const docSnap = await getDoc(doc(db, 'users', id));
+      return docSnap.exists() ? (docSnap.data() as User) : null;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, `users/${id}`);
+      return null;
+    }
   },
   async saveUser(user: User): Promise<void> {
-    await setDoc(doc(db, 'users', user.id), user);
+    try {
+      await setDoc(doc(db, 'users', user.id), user);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `users/${user.id}`);
+    }
   },
 
   async getLocations(): Promise<Record<string, { lat: number, lng: number, timestamp: number, userName: string, userAvatar: string }>> {
-    const snapshot = await getDocs(collection(db, 'locations'));
-    const locations: Record<string, any> = {};
-    snapshot.docs.forEach(doc => {
-      locations[doc.id] = doc.data();
-    });
-    return locations;
+    try {
+      const snapshot = await getDocs(collection(db, 'locations'));
+      const locations: Record<string, any> = {};
+      snapshot.docs.forEach(doc => {
+        locations[doc.id] = doc.data();
+      });
+      return locations;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, 'locations');
+      return {};
+    }
   },
   subscribeLocations(callback: (locations: Record<string, any>) => void) {
     return onSnapshot(collection(db, 'locations'), (snapshot) => {
@@ -66,10 +165,16 @@ export const fbDb = {
         locations[doc.id] = doc.data();
       });
       callback(locations);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'locations');
     });
   },
   async saveLocation(userId: string, location: any): Promise<void> {
-    await setDoc(doc(db, 'locations', userId), { ...location, id: userId, userId });
+    try {
+      await setDoc(doc(db, 'locations', userId), { ...location, id: userId, userId });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `locations/${userId}`);
+    }
   },
 
   async uploadFile(file: File, path: string): Promise<string> {

@@ -16,16 +16,6 @@ export default defineConfig(({mode}) => {
       },
     },
     build: {
-      rollupOptions: {
-        output: {
-          manualChunks: {
-            'vendor-react': ['react', 'react-dom'],
-            'vendor-firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/storage'],
-            'vendor-motion': ['motion/react'],
-            'vendor-icons': ['lucide-react'],
-          },
-        },
-      },
       chunkSizeWarningLimit: 1000,
     },
     server: {
