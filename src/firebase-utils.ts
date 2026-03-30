@@ -3,6 +3,59 @@ import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage
 import { db, storage, auth } from './firebase';
 import { User, Post, Message } from './types';
 
+// Helper to compress images before upload
+const compressImage = async (file: File): Promise<File> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        
+        // Max dimensions
+        const MAX_WIDTH = 1200;
+        const MAX_HEIGHT = 1200;
+
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width *= MAX_HEIGHT / height;
+            height = MAX_HEIGHT;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        
+        // Compress to JPEG with 0.7 quality
+        canvas.toBlob((blob) => {
+          if (blob) {
+            const compressedFile = new File([blob], file.name.replace(/\.[^/.]+$/, "") + ".jpg", {
+              type: 'image/jpeg',
+              lastModified: Date.now(),
+            });
+            resolve(compressedFile);
+          } else {
+            resolve(file); // Fallback to original if compression fails
+          }
+        }, 'image/jpeg', 0.7);
+      };
+      img.onerror = () => resolve(file); // Fallback to original on error
+    };
+    reader.onerror = () => resolve(file); // Fallback to original on error
+  });
+};
+
 enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',
@@ -120,6 +173,13 @@ export const fbDb = {
       handleFirestoreError(error, OperationType.WRITE, `messages/${message.id}`);
     }
   },
+  async updateMessage(updatedMessage: Message): Promise<void> {
+    try {
+      await updateDoc(doc(db, 'messages', updatedMessage.id), updatedMessage as any);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `messages/${updatedMessage.id}`);
+    }
+  },
   async deleteMessage(id: string): Promise<void> {
     try {
       await deleteDoc(doc(db, 'messages', id));
@@ -178,8 +238,19 @@ export const fbDb = {
   },
 
   async uploadFile(file: File, path: string): Promise<string> {
+    // Compress image if it's an image file
+    let fileToUpload = file;
+    if (file.type.startsWith('image/')) {
+      try {
+        const compressedFile = await compressImage(file);
+        fileToUpload = compressedFile;
+      } catch (e) {
+        console.warn('Image compression failed, uploading original', e);
+      }
+    }
+
     const storageRef = ref(storage, path);
-    await uploadBytes(storageRef, file);
+    await uploadBytes(storageRef, fileToUpload);
     return await getDownloadURL(storageRef);
   },
   

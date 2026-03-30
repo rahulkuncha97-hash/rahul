@@ -18,6 +18,7 @@ export interface Post {
   timestamp: number;
   likes: string[]; // User IDs
   comments: Comment[];
+  isUploadingMedia?: boolean;
 }
 
 export interface Comment {
@@ -37,4 +38,5 @@ export interface Message {
   voice?: string;
   timestamp: number;
   triggeredBy?: string;
+  isUploadingMedia?: boolean;
 }

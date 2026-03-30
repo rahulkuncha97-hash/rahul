@@ -35,7 +35,8 @@ import {
   Info,
   Play,
   Pause,
-  Square
+  Square,
+  ArrowLeft
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
@@ -287,6 +288,20 @@ const HomeTab = ({ user, posts, messages }: { user: User, posts: Post[], message
         </div>
       </header>
 
+      <form action="https://www.google.com/search" method="GET" target="_blank" className="relative">
+        <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none">
+          <svg className="w-4 h-4 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12.545,10.239v3.821h5.445c-0.712,2.315-2.647,3.972-5.445,3.972c-3.332,0-6.033-2.701-6.033-6.032s2.701-6.032,6.033-6.032c1.498,0,2.866,0.549,3.921,1.453l2.814-2.814C17.503,2.988,15.139,2,12.545,2C7.021,2,2.543,6.477,2.543,12s4.478,10,10.002,10c8.396,0,10.249-7.85,9.426-11.748L12.545,10.239z"/>
+          </svg>
+        </div>
+        <input 
+          type="text" 
+          name="q" 
+          placeholder="Search Google..." 
+          className="w-full bg-white/5 border border-white/10 rounded-2xl py-3 pl-10 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all text-white placeholder-gray-500"
+        />
+      </form>
+
       <div className="grid grid-cols-2 gap-3">
         <GlassCard className="p-4 space-y-1">
           <p className="text-[10px] uppercase tracking-widest text-gray-500 font-bold">Posts</p>
@@ -393,9 +408,11 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
     const currentPreview = preview;
     const currentVoicePreview = voicePreview;
 
-    const tempId = "temp_" + Date.now();
+    const postId = "post_" + Date.now();
+    const isUploading = !!currentImage || !!currentVoice;
+    
     const optimisticPost: Post & { isOptimistic?: boolean } = {
-      id: tempId,
+      id: postId,
       userId: user.id,
       userName: user.name,
       userAvatar: user.avatar || "",
@@ -405,7 +422,8 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
       timestamp: Date.now(),
       likes: [],
       comments: [],
-      isOptimistic: true
+      isOptimistic: true,
+      isUploadingMedia: isUploading
     };
 
     setOptimisticPosts(prev => [optimisticPost, ...prev]);
@@ -416,34 +434,46 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
     setPreview(null);
     setVoicePreview(null);
     setShowCreate(false);
-    setPosting(true);
 
     try {
-      let imageUrl = "";
-      let voiceUrl = "";
-      
-      if (currentImage) imageUrl = await uploadFile(currentImage, "posts/images");
-      if (currentVoice) voiceUrl = await uploadFile(currentVoice, "posts/voice");
-
-      const newPost: Post = {
-        id: tempId,
-        userId: user.id,
-        userName: user.name,
-        userAvatar: user.avatar || "",
-        content: currentContent,
-        image: imageUrl,
-        voice: voiceUrl,
-        timestamp: Date.now(),
-        likes: [],
-        comments: []
+      // Save to DB immediately without media URLs
+      const { isOptimistic, ...rest } = optimisticPost;
+      const dbPost: Post = {
+        ...rest,
+        image: "",
+        voice: ""
       };
-      await db.savePost(newPost);
-      setPosts(await db.getPosts());
+      await db.savePost(dbPost);
+
+      if (isUploading) {
+        // Fire and forget background upload
+        (async () => {
+          try {
+            let imageUrl = "";
+            let voiceUrl = "";
+            
+            if (currentImage) imageUrl = await uploadFile(currentImage, `posts/images/${postId}_${Date.now()}`);
+            if (currentVoice) voiceUrl = await uploadFile(currentVoice, `posts/voice/${postId}_${Date.now()}`);
+
+            const updatedPost = {
+              ...dbPost,
+              image: imageUrl,
+              voice: voiceUrl,
+              isUploadingMedia: false
+            };
+            await db.updatePost(updatedPost);
+          } catch (err) {
+            console.error("Background upload error:", err);
+          } finally {
+            setOptimisticPosts(prev => prev.filter(p => p.id !== postId));
+          }
+        })();
+      } else {
+        setOptimisticPosts(prev => prev.filter(p => p.id !== postId));
+      }
     } catch (err) {
       console.error("Post error:", err);
-    } finally {
-      setPosting(false);
-      setOptimisticPosts(prev => prev.filter(p => p.id !== tempId));
+      setOptimisticPosts(prev => prev.filter(p => p.id !== postId));
     }
   };
 
@@ -558,7 +588,7 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
       </AnimatePresence>
 
       <div className="space-y-4">
-        {[...optimisticPosts, ...posts].map(post => (
+        {[...optimisticPosts, ...posts.filter(p => !optimisticPosts.find(op => op.id === p.id))].sort((a, b) => b.timestamp - a.timestamp).map(post => (
           <GlassCard key={post.id} tilt className={cn("group", post.isOptimistic && "opacity-70")}>
             <div className="p-3 flex items-center justify-between">
               <div className="flex items-center gap-2.5">
@@ -599,6 +629,14 @@ const FeedTab = ({ user, posts, setPosts }: { user: User, posts: Post[], setPost
                     referrerPolicy="no-referrer" 
                   />
                 )}
+              </div>
+            )}
+            {post.isUploadingMedia && !post.image && (
+              <div className="relative aspect-video overflow-hidden border-y border-white/5 bg-white/5 flex items-center justify-center">
+                <div className="flex flex-col items-center gap-3 text-purple-400">
+                  <div className="w-8 h-8 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
+                  <span className="text-xs font-medium tracking-widest uppercase">Uploading media...</span>
+                </div>
               </div>
             )}
             {post.voice && (
@@ -715,16 +753,19 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
       const currentLocalPreview = localMediaPreview;
       const currentVoice = pendingVoice;
 
-      const tempId = "temp_" + Date.now();
+      const msgId = "msg_" + Date.now();
+      const isUploading = !!currentMedia || !!currentVoice;
+
       const optimisticMsg: Message & { isOptimistic?: boolean } = {
-        id: tempId,
+        id: msgId,
         userId: user.id,
         userName: user.name,
         content: currentContent,
         image: currentLocalPreview || "",
         voice: currentVoice ? URL.createObjectURL(currentVoice) : "",
         timestamp: Date.now(),
-        isOptimistic: true
+        isOptimistic: true,
+        isUploadingMedia: isUploading
       };
 
       setOptimisticMessages(prev => [...prev, optimisticMsg]);
@@ -735,30 +776,42 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
       setPendingVoice(null);
 
       try {
-        let mediaUrl = "";
-        let voiceUrl = "";
-
-        if (currentMedia) {
-          mediaUrl = await uploadFile(currentMedia, "chat/media");
-        }
-        if (currentVoice) {
-          voiceUrl = await uploadFile(currentVoice, "chat/voice");
-        }
-
-        const newMsg: Message = {
-          id: tempId,
-          userId: user.id,
-          userName: user.name,
-          content: currentContent,
-          image: mediaUrl,
-          voice: voiceUrl,
-          timestamp: Date.now()
+        const { isOptimistic, ...rest } = optimisticMsg;
+        const dbMsg: Message = {
+          ...rest,
+          image: "",
+          voice: ""
         };
-        await db.saveMessage(newMsg);
+        await db.saveMessage(dbMsg);
+
+        if (isUploading) {
+          (async () => {
+            try {
+              let mediaUrl = "";
+              let voiceUrl = "";
+
+              if (currentMedia) mediaUrl = await uploadFile(currentMedia, `chat/media/${msgId}_${Date.now()}`);
+              if (currentVoice) voiceUrl = await uploadFile(currentVoice, `chat/voice/${msgId}_${Date.now()}`);
+
+              const updatedMsg = {
+                ...dbMsg,
+                image: mediaUrl,
+                voice: voiceUrl,
+                isUploadingMedia: false
+              };
+              await db.updateMessage(updatedMsg);
+            } catch (error) {
+              console.error("Background send error:", error);
+            } finally {
+              setOptimisticMessages(prev => prev.filter(m => m.id !== msgId));
+            }
+          })();
+        } else {
+          setOptimisticMessages(prev => prev.filter(m => m.id !== msgId));
+        }
       } catch (error) {
         console.error("Send error:", error);
-      } finally {
-        setOptimisticMessages(prev => prev.filter(m => m.id !== tempId));
+        setOptimisticMessages(prev => prev.filter(m => m.id !== msgId));
       }
     }
   };
@@ -801,7 +854,7 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
       </header>
 
       <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
-        {[...messages, ...optimisticMessages].map((msg) => {
+        {[...messages.filter(m => !optimisticMessages.find(om => om.id === m.id)), ...optimisticMessages].sort((a, b) => a.timestamp - b.timestamp).map((msg) => {
           const isMe = msg.userId === user.id;
           const isAI = msg.userId === "ai-assistant";
           const canDelete = !msg.isOptimistic && (isMe || (isAI && msg.triggeredBy === user.id));
@@ -878,6 +931,14 @@ const ChatTab = ({ user, messages }: { user: User, messages: Message[] }) => {
                       ) : (
                         <img src={msg.image} className="w-full max-h-60 object-cover" referrerPolicy="no-referrer" />
                       )}
+                    </div>
+                  )}
+                  {msg.isUploadingMedia && !msg.image && (
+                    <div className="rounded-lg overflow-hidden border border-white/10 w-48 h-32 bg-white/5 flex items-center justify-center">
+                      <div className="flex flex-col items-center gap-2 text-purple-400">
+                        <div className="w-6 h-6 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
+                        <span className="text-[10px] font-medium uppercase tracking-widest">Uploading...</span>
+                      </div>
                     </div>
                   )}
                   {msg.voice && <VoicePlayer url={msg.voice} />}
@@ -981,6 +1042,7 @@ const MapTab = ({ user }: { user: User }) => {
   const [isLiveEnabled, setIsLiveEnabled] = useState(false);
   const [currentLocation, setCurrentLocation] = useState<{ lat: number, lng: number } | null>(null);
   const [otherUsers, setOtherUsers] = useState<{ [key: string]: any }>({});
+  const [bookingUrl, setBookingUrl] = useState<string | null>(null);
   const watchId = useRef<number | null>(null);
 
   useEffect(() => {
@@ -1071,7 +1133,7 @@ const MapTab = ({ user }: { user: User }) => {
       uber: "https://m.uber.com",
       rapido: "https://www.rapido.bike"
     };
-    window.open(urls[app], "_blank");
+    setBookingUrl(urls[app]);
   };
 
   return (
@@ -1079,7 +1141,7 @@ const MapTab = ({ user }: { user: User }) => {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="h-[calc(100vh-160px)] flex flex-col gap-4"
+      className="h-[calc(100vh-160px)] flex flex-col gap-4 relative"
     >
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold tracking-tighter">Colony Map</h1>
@@ -1108,8 +1170,8 @@ const MapTab = ({ user }: { user: User }) => {
           className="z-0"
         >
           <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            attribution='&copy; <a href="https://www.google.com/intl/en_us/help/terms_maps/">Google Maps</a>'
+            url="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}"
           />
           
           {locations.map(loc => (
@@ -1193,6 +1255,36 @@ const MapTab = ({ user }: { user: User }) => {
             </div>
           </motion.div>
         )}
+
+        <AnimatePresence>
+          {bookingUrl && (
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              className="absolute inset-0 z-50 bg-white flex flex-col"
+            >
+              <div className="bg-black text-white p-3 flex items-center shadow-md z-10">
+                <button 
+                  onClick={() => setBookingUrl(null)}
+                  className="flex items-center gap-2 bg-white/10 hover:bg-white/20 rounded-full px-3 py-1.5 text-sm font-medium transition-colors"
+                >
+                  <ArrowLeft size={16} />
+                  Back to Map
+                </button>
+                <div className="flex-1 text-center font-bold text-sm mr-20">
+                  {bookingUrl.includes('uber') ? 'Uber' : 'Rapido'}
+                </div>
+              </div>
+              <iframe 
+                src={bookingUrl} 
+                className="w-full flex-1 border-none bg-white"
+                title="Booking Service"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       <div className="grid grid-cols-3 gap-3">

@@ -115,7 +115,8 @@ service cloud.firestore {
              isValidOptionalString('voice', 0, 1000) &&
              request.resource.data.timestamp is number &&
              request.resource.data.likes is list &&
-             request.resource.data.comments is list;
+             request.resource.data.comments is list &&
+             (!('isUploadingMedia' in request.resource.data) || request.resource.data.isUploadingMedia is bool);
     }
 
     function isValidMessage() {
@@ -127,7 +128,8 @@ service cloud.firestore {
              isValidOptionalString('image', 0, 1000) &&
              isValidOptionalString('voice', 0, 1000) &&
              isValidOptionalString('triggeredBy', 0, 100) &&
-             request.resource.data.timestamp is number;
+             request.resource.data.timestamp is number &&
+             (!('isUploadingMedia' in request.resource.data) || request.resource.data.isUploadingMedia is bool);
     }
 
     function isValidLocation() {
